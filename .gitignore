@@ -26,6 +26,18 @@ wheels/
 .env.*.local
 *.env
 
+# Patient data (recordings saved by the kiosk) — never commit PII
+backend/data/
+data/audio/
+
+# Firebase
+.firebase/
+.runtimeconfig.json
+# Service account / Admin SDK keys (used later by firebase-admin)
+*serviceAccount*.json
+*service-account*.json
+*-firebase-adminsdk-*.json
+
 # Database
 *.sql.backup
 backup_*.sql
