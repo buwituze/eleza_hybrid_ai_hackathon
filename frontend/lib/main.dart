@@ -5,6 +5,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
 import 'firebase_options.dart';
 import 'screens/voice_interface_page.dart';
 import 'screens/ai_smoke_test_page.dart';
@@ -23,6 +24,7 @@ import 'services/kinyarwanda_widgets_localizations.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await _activateAppCheck();
   await dotenv.load(fileName: '.env');
   await EasyLocalization.ensureInitialized();
 
@@ -35,6 +37,36 @@ void main() async {
       child: const MyApp(),
     ),
   );
+}
+
+/// App Check is required by Firebase AI Logic. It also covers the hybrid
+/// bridge (web/eleza_ai.js), which shares this Firebase app instance.
+///
+/// - Debug builds (or no site key): debug provider. Uses APPCHECK_DEBUG_TOKEN
+///   from firebase.env.json; register it in Firebase console → App Check →
+///   Apps → frontend (web) → ⋮ → Manage debug tokens.
+/// - Release builds with RECAPTCHA_ENTERPRISE_SITE_KEY: reCAPTCHA Enterprise.
+Future<void> _activateAppCheck() async {
+  const siteKey = String.fromEnvironment('RECAPTCHA_ENTERPRISE_SITE_KEY');
+  const debugToken = String.fromEnvironment('APPCHECK_DEBUG_TOKEN');
+
+  final useRecaptcha = siteKey.isNotEmpty && !kDebugMode;
+  final WebProvider provider =
+      useRecaptcha
+          ? ReCaptchaEnterpriseProvider(siteKey)
+          : WebDebugProvider(
+            debugToken: debugToken.isEmpty ? null : debugToken,
+          );
+
+  try {
+    await FirebaseAppCheck.instance.activate(providerWeb: provider);
+    debugPrint(
+      'App Check activated (${useRecaptcha ? 'reCAPTCHA Enterprise' : 'debug provider'})',
+    );
+  } catch (e) {
+    // Don't block the kiosk; AI calls will report App Check errors instead.
+    debugPrint('App Check activation failed: $e');
+  }
 }
 
 class MyApp extends StatefulWidget {
