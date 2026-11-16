@@ -3,6 +3,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:gif_view/gif_view.dart';
 import '../services/api_service.dart';
 import '../services/audio_service.dart';
+import '../services/hybrid_ai_service.dart';
 import '../services/tts_service.dart';
 
 enum SessionState {
@@ -50,10 +51,59 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
   static const Color _buttonGreen = Color(0xFFB2B24B);
   static const bool _showGifArea = true;
 
+  // On-device model (Gemini Nano via Firebase AI Logic). null = not checked yet.
+  OnDeviceStatus? _onDeviceStatus;
+  double? _onDeviceDownloadProgress;
+
   @override
   void initState() {
     super.initState();
     _updateStatusMessage();
+    _refreshOnDeviceStatus();
+  }
+
+  // ==================== ON-DEVICE MODEL ====================
+
+  Future<void> _refreshOnDeviceStatus() async {
+    if (!HybridAIService.isSupported) {
+      setState(() => _onDeviceStatus = OnDeviceStatus.unsupported);
+      return;
+    }
+    final status = await HybridAIService.onDeviceAvailability();
+    debugPrint('On-device model status: ${status.name}');
+    if (mounted) setState(() => _onDeviceStatus = status);
+  }
+
+  /// Starts the Gemini Nano download in the background. Chrome only allows
+  /// this right after a user gesture, so it is called first thing from the
+  /// Start button. Never blocks the session: until Nano is ready, hybrid
+  /// prompts fall back to the cloud.
+  void _warmUpOnDeviceModel() {
+    if (!HybridAIService.isSupported ||
+        _onDeviceStatus == OnDeviceStatus.available ||
+        _onDeviceStatus == OnDeviceStatus.unsupported ||
+        _onDeviceStatus == OnDeviceStatus.unavailable ||
+        _onDeviceDownloadProgress != null) {
+      return;
+    }
+    HybridAIService.prepareOnDevice(
+          onProgress: (progress) {
+            if (!mounted) return;
+            setState(() {
+              _onDeviceDownloadProgress = progress;
+              if (progress >= 1.0) _onDeviceStatus = OnDeviceStatus.available;
+            });
+          },
+        )
+        .then((status) {
+          debugPrint('On-device model after prepare: ${status.name}');
+          if (mounted && _onDeviceStatus != OnDeviceStatus.available) {
+            setState(() => _onDeviceStatus = status);
+          }
+        })
+        .catchError((Object e) {
+          debugPrint('On-device model warm-up failed (cloud will be used): $e');
+        });
   }
 
   @override
@@ -370,6 +420,7 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
     }
 
     if (!_isSessionActive) {
+      _warmUpOnDeviceModel(); // must run inside the click (user gesture)
       _startSession();
     } else if (_isRecording) {
       _stopRecordingAndSubmit();
