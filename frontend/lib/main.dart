@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:easy_localization/easy_localization.dart';
@@ -6,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 import 'screens/voice_interface_page.dart';
+import 'screens/ai_smoke_test_page.dart';
 import 'screens/patient_detail_page.dart';
 import 'screens/device_configuration_screen.dart';
 import 'screens/login_screen.dart';
@@ -200,6 +202,8 @@ class _MyAppState extends State<MyApp> {
         '/device-configuration': (context) => const DeviceConfigurationScreen(),
         '/voice-interface': (context) => const VoiceInterfacePage(),
         '/login': (context) => const LoginScreen(),
+        if (kDebugMode)
+          '/ai-smoke-test': (context) => const AiSmokeTestPage(),
         '/patient-detail':
             (context) => const PatientDetailPage(
               userRole: 'doctor',
