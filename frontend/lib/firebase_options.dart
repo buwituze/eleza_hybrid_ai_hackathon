@@ -52,13 +52,28 @@ class DefaultFirebaseOptions {
     }
   }
 
-  static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyB-MRaLek3QFYKnd8eg3ArWfC4P_RLM0F8',
-    appId: '1:215925117750:web:21b9052132a62e3d9ad997',
-    messagingSenderId: '215925117750',
-    projectId: 'eleza-b2be6',
-    authDomain: 'eleza-b2be6.firebaseapp.com',
-    storageBucket: 'eleza-b2be6.firebasestorage.app',
-    measurementId: 'G-7153D8CL2V',
-  );
+  // Values are injected at build time so no keys live in the repo:
+  //   flutter run -d chrome --dart-define-from-file=firebase.env.json
+  // Copy firebase.env.example.json → firebase.env.json (gitignored) and fill it
+  // in from Firebase console → Project settings → Your apps → frontend (web).
+  // NOTE: re-running `flutterfire configure` overwrites this file with
+  // hardcoded values — restore this version afterwards.
+  static FirebaseOptions get web {
+    const apiKey = String.fromEnvironment('FIREBASE_API_KEY');
+    if (apiKey.isEmpty) {
+      throw StateError(
+        'Firebase config missing. Run with '
+        '--dart-define-from-file=firebase.env.json (see firebase.env.example.json).',
+      );
+    }
+    return const FirebaseOptions(
+      apiKey: apiKey,
+      appId: String.fromEnvironment('FIREBASE_APP_ID'),
+      messagingSenderId: String.fromEnvironment('FIREBASE_MESSAGING_SENDER_ID'),
+      projectId: String.fromEnvironment('FIREBASE_PROJECT_ID'),
+      authDomain: String.fromEnvironment('FIREBASE_AUTH_DOMAIN'),
+      storageBucket: String.fromEnvironment('FIREBASE_STORAGE_BUCKET'),
+      measurementId: String.fromEnvironment('FIREBASE_MEASUREMENT_ID'),
+    );
+  }
 }
