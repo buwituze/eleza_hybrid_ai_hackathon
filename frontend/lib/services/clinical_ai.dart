@@ -116,6 +116,127 @@ class TranslatedTurn {
 class ClinicalAI {
   ClinicalAI._();
 
+  // ── Model B: clinical extraction (on-device preferred) ──────────────────
+  // Ported from backend/models/model_b.py (_FULL_SYSTEM / FULL_SCHEMA).
+  // Input is always English (Kinyarwanda is translated first), so it can run
+  // on Gemini Nano. The backend re-validates the result and re-checks red
+  // flags on the original words.
+
+  static const _extractionSystem =
+      'You are a clinical information extraction assistant at a hospital '
+      'pre-consultation kiosk.\n'
+      'Extract clinical information from the patient conversation.\n'
+      'Rules:\n'
+      '- Extract ONLY facts the patient stated. Never diagnose or guess.\n'
+      '- Use an empty string for anything not stated.\n'
+      '- duration: be specific ("started yesterday", "3 days").\n'
+      '- severity: exact number if given (e.g. "7/10"), else "mild", '
+      '"moderate" or "severe".\n'
+      '- associated_symptoms: other symptoms besides the main one, each a '
+      'short phrase.\n'
+      '- progression: "worsening", "improving" or "stable" if stated.\n'
+      '- patient_name: only the name — drop "My name is", "I am", "Call me".\n'
+      '- patient_age: digits only (e.g. "35"), never words.\n'
+      '- patient_location: "Neighborhood, City" when recognisable '
+      '(e.g. "Kanombe, Kigali").\n'
+      '- red_flags_present: true if ANY of: difficulty breathing, chest pain '
+      'or pressure, fainting or loss of consciousness, severe bleeding, '
+      'coughing or vomiting blood, seizure, sudden vision loss, sudden worst-'
+      'ever pain, cannot move a limb. Otherwise false.';
+
+  static const _extractionStringFields = [
+    'patient_name',
+    'patient_age',
+    'patient_gender',
+    'patient_phone',
+    'patient_location',
+    'chief_complaint',
+    'duration',
+    'severity',
+    'body_part',
+    'progression',
+    'triggers',
+    'additional_observations',
+  ];
+
+  static final Map<String, dynamic> _extractionSchema = {
+    'type': 'object',
+    'properties': {
+      for (final f in _extractionStringFields) f: {'type': 'string'},
+      'associated_symptoms': {
+        'type': 'array',
+        'items': {'type': 'string'},
+      },
+      'red_flags_present': {'type': 'boolean'},
+    },
+    'required': [
+      ..._extractionStringFields,
+      'associated_symptoms',
+      'red_flags_present',
+    ],
+  };
+
+  /// Model B. [initial] is the opening complaint and [turns] the follow-up
+  /// questions/answers — all in English. Returns the extraction map in the
+  /// backend's FULL_SCHEMA shape.
+  ///
+  /// Never throws: on failure returns an empty extraction (trace null) so the
+  /// backend's rules still ask the next question.
+  static Future<AiStep<Map<String, dynamic>>> extract({
+    required String initial,
+    List<TranslatedTurn> turns = const [],
+  }) async {
+    final buf = StringBuffer('Initial statement: ${initial.trim()}\n');
+    if (turns.isNotEmpty) {
+      buf.writeln('\nFollow-up conversation:');
+      for (var i = 0; i < turns.length; i++) {
+        buf
+          ..writeln('Q${i + 1}: ${turns[i].question ?? ''}')
+          ..writeln('A${i + 1}: ${turns[i].answer}');
+      }
+    }
+    buf.write('\nExtract the clinical information as JSON.');
+
+    try {
+      final r = await HybridAIService.generate(
+        prompt: buf.toString(),
+        mode: ClinicalAIConfig.modeFor(
+          ClinicalStep.extraction,
+          language: 'english', // input is English after translation
+        ),
+        systemInstruction: _extractionSystem,
+        jsonSchema: _extractionSchema,
+        temperature: 0,
+        maxOutputTokens: 600,
+        onDeviceTimeout: ClinicalAIConfig.onDeviceTimeout,
+      );
+      final raw = (r.json as Map).cast<String, dynamic>();
+      return AiStep(
+        _normaliseExtraction(raw),
+        AiTrace.fromResult(ClinicalStep.extraction, r),
+      );
+    } catch (e) {
+      debugPrint('⚠️ Extraction failed, sending empty extraction: $e');
+      return AiStep(_normaliseExtraction(const {}), null);
+    }
+  }
+
+  static Map<String, dynamic> _normaliseExtraction(Map<String, dynamic> raw) {
+    final out = <String, dynamic>{
+      for (final f in _extractionStringFields)
+        f: (raw[f] == null) ? '' : raw[f].toString().trim(),
+    };
+    final symptoms = raw['associated_symptoms'];
+    final symptomList = symptoms is List ? symptoms : [symptoms];
+    out['associated_symptoms'] = [
+      for (final s in symptomList)
+        if (s != null && s.toString().trim().isNotEmpty) s.toString().trim(),
+    ];
+    final rf = raw['red_flags_present'];
+    out['red_flags_present'] = rf is bool ? rf : null;
+    return out;
+  }
+
   // ── Translation (Kinyarwanda → English, cloud) ──────────────────────────
 
   static const _translationSystem =

@@ -127,28 +127,69 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
     }
   }
 
-  static const _translationLabel = 'Translation (Kinyarwanda → English, cloud)';
+  // ── Clinical pipeline steps (lib/services/clinical_ai.dart) ─────────────
 
-  Future<void> _runTranslation() async {
+  static String _traceLine(AiTrace? t) {
+    if (t == null) return '❌ model failed — safe default used';
+    final fb =
+        t.fallbackReason == null
+            ? ''
+            : '  •  fallback: ${t.fallbackReason!.wire}';
+    return '✅ source: ${t.source.wire}$fb  •  ${t.latency.inMilliseconds} ms';
+  }
+
+  late final Map<String, Future<String> Function()> _clinicalTests = {
+    'Translation (Kinyarwanda → English, cloud)': () async {
+      final step = await ClinicalAI.translateTurn(
+        question: 'Ni ryari ububabare bwatangiye?',
+        answer: 'Ndababara umutwe cyane kuva ejo, kandi mfite fièvre nijoro.',
+      );
+      return '${_traceLine(step.trace)}\n'
+          'Q: ${step.value.question}\nA: ${step.value.answer}';
+    },
+    'Model B — extraction (prefer on-device)': () async {
+      final step = await ClinicalAI.extract(
+        initial: 'I have had a bad headache since yesterday and some fever.',
+        turns: const [
+          TranslatedTurn(
+            question: 'What is your name?',
+            answer: 'My name is Aline Uwase',
+          ),
+          TranslatedTurn(
+            question: 'How old are you?',
+            answer: 'I am twenty eight',
+          ),
+          TranslatedTurn(
+            question: 'How strong is the pain from 1 to 10?',
+            answer: 'About seven, and light hurts my eyes',
+          ),
+        ],
+      );
+      final e = step.value;
+      return '${_traceLine(step.trace)}\n'
+          'complaint: ${e['chief_complaint']} • severity: ${e['severity']} • '
+          'duration: ${e['duration']}\nname: ${e['patient_name']} • age: '
+          '${e['patient_age']} • other: ${e['associated_symptoms']} • '
+          'red flags: ${e['red_flags_present']}';
+    },
+  };
+
+  Future<void> _runClinical(String label) async {
     setState(() {
-      _running.add(_translationLabel);
-      _results.remove(_translationLabel);
+      _running.add(label);
+      _results.remove(label);
     });
-    final step = await ClinicalAI.translateTurn(
-      question: 'Ni ryari ububabare bwatangiye?',
-      answer: 'Ndababara umutwe cyane kuva ejo, kandi mfite fièvre nijoro.',
-    );
-    final t = step.trace;
-    final out =
-        t == null
-            ? '❌ translation failed — original text kept'
-            : '✅ source: ${t.source.wire}  •  ${t.latency.inMilliseconds} ms\n'
-                'Q: ${step.value.question}\nA: ${step.value.answer}';
-    debugPrint('[AI smoke] $_translationLabel: $out');
+    String out;
+    try {
+      out = await _clinicalTests[label]!();
+    } catch (e) {
+      out = '❌ $e';
+    }
+    debugPrint('[AI smoke] $label: $out');
     if (mounted) {
       setState(() {
-        _running.remove(_translationLabel);
-        _results[_translationLabel] = out;
+        _running.remove(label);
+        _results[label] = out;
       });
     }
   }
@@ -157,7 +198,9 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
     for (final c in _cases) {
       await _run(c);
     }
-    await _runTranslation();
+    for (final label in _clinicalTests.keys) {
+      await _runClinical(label);
+    }
   }
 
   @override
@@ -232,25 +275,31 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
                 ),
               ),
             ),
-          Card(
-            child: ListTile(
-              title: const Text(_translationLabel),
-              subtitle: SelectableText(
-                _running.contains(_translationLabel)
-                    ? 'running…'
-                    : (_results[_translationLabel] ??
-                        'Q: Ni ryari ububabare bwatangiye?\n'
-                            'A: Ndababara umutwe cyane kuva ejo, kandi mfite fièvre nijoro.'),
-              ),
-              trailing: IconButton(
-                icon: const Icon(Icons.play_circle_outline),
-                onPressed:
-                    _running.contains(_translationLabel)
-                        ? null
-                        : _runTranslation,
-              ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(4, 16, 4, 4),
+            child: Text(
+              'Clinical pipeline steps',
+              style: TextStyle(fontWeight: FontWeight.bold),
             ),
           ),
+          for (final label in _clinicalTests.keys)
+            Card(
+              child: ListTile(
+                title: Text(label),
+                subtitle: SelectableText(
+                  _running.contains(label)
+                      ? 'running…'
+                      : (_results[label] ?? 'not run yet'),
+                ),
+                trailing: IconButton(
+                  icon: const Icon(Icons.play_circle_outline),
+                  onPressed:
+                      _running.contains(label)
+                          ? null
+                          : () => _runClinical(label),
+                ),
+              ),
+            ),
         ],
       ),
     );
