@@ -3,10 +3,20 @@ models/model_c.py — Next-question selection wrapper.
 """
 
 import os, re
+from typing import Optional
 from google import genai
 from .gemini_utils import generate_with_fallback
 
-_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Lazy client: the hybrid kiosk flow runs this model in the browser via
+# Firebase AI Logic, so the backend must start without GEMINI_API_KEY.
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    return _client
 
 COVERAGE_CHECKLIST = [
     "severity or intensity of the main symptom",
@@ -41,6 +51,56 @@ def _stage(num_turns: int) -> str:
     return "escalation"
 
 
+def next_rule_question(extraction: dict, questions_asked: list[str]) -> Optional[str]:
+    """
+    Rule-based part of question selection (no LLM): the next patient-info
+    question (name, age, ...) that is neither filled nor already asked.
+    Returns None when the AI should choose the next clinical question.
+    """
+    from .model_c_rules import PATIENT_INFO_QUESTIONS
+    lang = extraction.get("language", "kinyarwanda")
+    info_questions = PATIENT_INFO_QUESTIONS.get(lang, PATIENT_INFO_QUESTIONS["kinyarwanda"])
+    for q in info_questions:
+        # Skip if already filled OR already asked (don't repeat even if extraction lost the value)
+        if not extraction.get(q["targets"]) and q["question"] not in questions_asked:
+            return q["question"]
+    return None
+
+
+def fallback_question(language: str) -> str:
+    """Generic question used when the AI question cannot be generated."""
+    if language == "kinyarwanda":
+        return "Mbwira byinshi ku bibazo byawe?"
+    return "Can you tell me more about how you are feeling?"
+
+
+def question_context(extraction: dict, questions_asked: list[str],
+                     patient_answers: list[str]) -> dict:
+    """
+    Everything a client needs to build the Model C prompt itself
+    (hybrid flow: the question is generated in the browser).
+    """
+    return {
+        "system_instruction": _SYSTEM,
+        "known": {k: v for k, v in extraction.items() if v},
+        "history": [{"question": q, "answer": a} for q, a in zip(questions_asked, patient_answers)],
+        "stage": _stage(len(questions_asked)),
+        "red_flag_active": bool(extraction.get("red_flags_present")),
+        "red_flag_followups": RED_FLAG_FOLLOWUPS,
+        "coverage_checklist": COVERAGE_CHECKLIST,
+        "language": extraction.get("language", "kinyarwanda"),
+    }
+
+
+def clean_question(raw: str) -> str:
+    """Normalise a generated question: strip 'Question:' prefixes, ensure '?'."""
+    question = re.sub(r"^(question|q)[:\-]?\s*", "", (raw or "").strip(), flags=re.IGNORECASE)
+    question = question.strip().strip('"').strip()
+    if question and not question.endswith("?"):
+        question += "?"
+    return question
+
+
 def select_next_question(extraction: dict, questions_asked: list[str],
                          patient_answers: list[str]) -> str:
     """
@@ -55,14 +115,9 @@ def select_next_question(extraction: dict, questions_asked: list[str],
         Question string ready to speak to the patient.
     """
     # Always ask patient info first if missing
-    from .model_c_rules import PATIENT_INFO_QUESTIONS
-    lang = extraction.get("language", "kinyarwanda")
-    info_questions = PATIENT_INFO_QUESTIONS.get(lang, PATIENT_INFO_QUESTIONS["kinyarwanda"])
-    info_fields = [q["targets"] for q in info_questions]
-    for q in info_questions:
-        # Skip if already filled OR already asked (don't repeat even if extraction lost the value)
-        if not extraction.get(q["targets"]) and q["question"] not in questions_asked:
-            return q["question"]
+    rule_question = next_rule_question(extraction, questions_asked)
+    if rule_question:
+        return rule_question
 
     # After patient info, proceed as before
     system_prompt = _SYSTEM
@@ -101,7 +156,7 @@ Understood. One question only.
     
     try:
         response = generate_with_fallback(
-            _client,
+            _get_client(),
             contents=full_prompt,
             config={
                 'temperature': 0.2,
@@ -109,16 +164,10 @@ Understood. One question only.
                 'thinking_config': {'thinking_budget': 0},
             }
         )
-        question = re.sub(r"^(question|q)[:\-]?\s*", "", response.text.strip(), flags=re.IGNORECASE)
-        if question and not question.endswith("?"):
-            question += "?"
-        return question
+        return clean_question(response.text)
     except Exception as e:
         print(f"Warning: All Gemini models failed in model_c: {e}. Using fallback question.")
-        lang = extraction.get("language", "kinyarwanda")
-        if lang == "kinyarwanda":
-            return "Mbwira byinshi ku bibazo byawe?"
-        return "Can you tell me more about how you are feeling?"
+        return fallback_question(extraction.get("language", "kinyarwanda"))
 
 
 def is_coverage_complete(extraction: dict, num_turns: int, max_turns: int) -> bool:
