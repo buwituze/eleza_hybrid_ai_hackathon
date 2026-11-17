@@ -16,6 +16,7 @@ passlib[bcrypt]>=1.7.4
 pyjwt>=2.8.0
 gunicorn>=21.0.0
 twilio>=9.0.0
+requests>=2.31.0
 
 # Note: Only WAV audio format is supported.
 # Frontend apps should record/convert audio to WAV format (16kHz mono recommended).
