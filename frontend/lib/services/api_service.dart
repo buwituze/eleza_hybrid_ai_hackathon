@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -18,17 +17,16 @@ class ApiService {
 
   // Automatically detect the correct base URL based on platform
   static String get baseUrl {
+    // Set API_BASE_URL in firebase.env.json (passed via
+    // --dart-define-from-file) to point at a different backend.
+    const envUrl = String.fromEnvironment('API_BASE_URL');
+    if (envUrl.trim().isNotEmpty) {
+      return envUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    }
+
     if (kIsWeb) {
       return 'https://boisterously-implicatory-anderson.ngrok-free.dev'; // ngrok (local dev)
       // return 'https://benithatuze-eleza-backend.hf.space'; // HuggingFace Space
-    }
-
-    final envUrl =
-        dotenv.env['API_BASE_URL'] ??
-        dotenv.env['BACKEND_BASE_URL'] ??
-        dotenv.env['BASE_URL'];
-    if (envUrl != null && envUrl.trim().isNotEmpty) {
-      return envUrl.trim().replaceAll(RegExp(r'/+$'), '');
     }
 
     // For mobile, default to Android emulator
