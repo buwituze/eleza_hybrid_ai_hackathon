@@ -147,6 +147,20 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
       return '${_traceLine(step.trace)}\n'
           'Q: ${step.value.question}\nA: ${step.value.answer}';
     },
+    'Model C — next question, English (prefer on-device)': () async {
+      final step = await ClinicalAI.nextQuestion(
+        context: _sampleQuestionContext('english'),
+        fallbackQuestion: 'Can you tell me more about how you are feeling?',
+      );
+      return '${_traceLine(step.trace)}\n${step.value}';
+    },
+    'Model C — next question, Kinyarwanda (cloud)': () async {
+      final step = await ClinicalAI.nextQuestion(
+        context: _sampleQuestionContext('kinyarwanda'),
+        fallbackQuestion: 'Mbwira byinshi ku bibazo byawe?',
+      );
+      return '${_traceLine(step.trace)}\n${step.value}';
+    },
     'Model B — extraction (prefer on-device)': () async {
       final step = await ClinicalAI.extract(
         initial: 'I have had a bad headache since yesterday and some fever.',
@@ -172,6 +186,42 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
           '${e['patient_age']} • other: ${e['associated_symptoms']} • '
           'red flags: ${e['red_flags_present']}';
     },
+  };
+
+  // Shape of `question_context` returned by POST /kiosk/{id}/extraction.
+  static Map<String, dynamic> _sampleQuestionContext(String language) => {
+    'system_instruction':
+        'You are a clinical question-selection assistant in a hospital '
+        'pre-consultation system.\nOutput ONE question only. Nothing else.\n'
+        'Rules:\n- One question per response.\n- No diagnosis, no medical '
+        'advice, no interpretation.\n- Do not repeat a question already '
+        'asked.\n- Keep it short and natural to say out loud.\n- Output the '
+        'question text only.',
+    'known': {
+      'chief_complaint': 'headache',
+      'duration': 'since yesterday',
+      'patient_name': 'Aline Uwase',
+      'language': language,
+    },
+    'history': [
+      {
+        'question':
+            language == 'english'
+                ? 'How old are you?'
+                : 'Mufite imyaka ingahe?',
+        'answer':
+            language == 'english' ? 'Twenty eight' : 'Makumyabiri n\'umunani',
+      },
+    ],
+    'stage': 'early',
+    'red_flag_active': false,
+    'red_flag_followups': const [],
+    'coverage_checklist': const [
+      'severity or intensity of the main symptom',
+      'whether the symptom is getting better, worse, or staying the same',
+      'any other symptoms alongside the main one',
+    ],
+    'language': language,
   };
 
   Future<void> _runClinical(String label) async {

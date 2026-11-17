@@ -221,6 +221,102 @@ class ClinicalAI {
     }
   }
 
+  // ── Model C: next question ──────────────────────────────────────────────
+  // The backend asks rule-based questions itself (patient info) and decides
+  // when coverage is complete; it only asks the browser for a question when
+  // clinical judgement is needed, and sends the prompt inputs
+  // (backend/models/model_c.py → question_context()).
+  // English sessions → prefer on-device; Kinyarwanda → cloud (Nano can't
+  // write Kinyarwanda).
+
+  /// Model C. [context] is `question_context` from POST /extraction;
+  /// [fallbackQuestion] is used if generation fails or returns junk.
+  static Future<AiStep<String>> nextQuestion({
+    required Map<String, dynamic> context,
+    required String fallbackQuestion,
+  }) async {
+    final language = (context['language'] as String?) ?? 'kinyarwanda';
+    final known = (context['known'] as Map?)?.cast<String, dynamic>() ?? {};
+    final history = (context['history'] as List?) ?? const [];
+    final checklist = (context['coverage_checklist'] as List?) ?? const [];
+    final followups = (context['red_flag_followups'] as List?) ?? const [];
+
+    final buf =
+        StringBuffer('Patient state:\n')
+          ..writeln(
+            known.isEmpty
+                ? '- (unknown)'
+                : known.entries
+                    .where((e) => e.key != 'language')
+                    .map((e) => '- ${e.key}: ${e.value}')
+                    .join('\n'),
+          )
+          ..writeln('\nConversation so far:')
+          ..writeln(
+            history.isEmpty
+                ? '  (none)'
+                : history
+                    .map((t) => '  Q: ${t['question']}\n  A: ${t['answer']}')
+                    .join('\n'),
+          )
+          ..writeln('\nStage: ${context['stage'] ?? 'mid'}');
+    if (context['red_flag_active'] == true) {
+      buf
+        ..writeln('\nRED FLAG ACTIVE. Prioritise these:')
+        ..writeln(followups.map((q) => '- $q').join('\n'));
+    }
+    buf
+      ..writeln('\nCoverage checklist (must be addressed eventually):')
+      ..writeln(checklist.map((c) => '- $c').join('\n'))
+      ..writeln(
+        '\nOutput the single best next question, in '
+        '${language == 'english' ? 'English' : 'Kinyarwanda'}. '
+        'Question text only.',
+      );
+
+    try {
+      final r = await HybridAIService.generate(
+        prompt: buf.toString(),
+        mode: ClinicalAIConfig.modeFor(
+          ClinicalStep.question,
+          language: language,
+        ),
+        systemInstruction: context['system_instruction'] as String?,
+        temperature: 0.2,
+        maxOutputTokens: 100,
+        onDeviceTimeout: ClinicalAIConfig.onDeviceTimeout,
+      );
+      final question = _cleanQuestion(r.text);
+      if (question == null) {
+        debugPrint('⚠️ Model C returned an unusable question: "${r.text}"');
+        return AiStep(fallbackQuestion, null);
+      }
+      return AiStep(question, AiTrace.fromResult(ClinicalStep.question, r));
+    } catch (e) {
+      debugPrint('⚠️ Model C failed, using fallback question: $e');
+      return AiStep(fallbackQuestion, null);
+    }
+  }
+
+  /// Mirrors backend model_c.clean_question(): first line only, no
+  /// "Question:" prefix or quotes, ends with "?". Null if unusable.
+  static String? _cleanQuestion(String raw) {
+    var q = raw
+        .trim()
+        .split('\n')
+        .firstWhere((l) => l.trim().isNotEmpty, orElse: () => '');
+    q =
+        q
+            .replaceFirst(
+              RegExp(r'^(question|q)\s*[:\-]?\s*', caseSensitive: false),
+              '',
+            )
+            .replaceAll(RegExp(r'^["“*]+|["”*]+$'), '')
+            .trim();
+    if (q.isEmpty || q.length > 250) return null;
+    return q.endsWith('?') ? q : '$q?';
+  }
+
   static Map<String, dynamic> _normaliseExtraction(Map<String, dynamic> raw) {
     final out = <String, dynamic>{
       for (final f in _extractionStringFields)
