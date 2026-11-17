@@ -1,69 +1,50 @@
 import 'dart:convert';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
+
+import 'api_service.dart';
 
 // Web-only import for Blob URL playback
 import 'tts_service_web.dart' if (dart.library.io) 'tts_service_io.dart'
     as platform;
 
-/// ElevenLabs Text-to-Speech service.
+/// Text-to-speech via the Eleza backend (POST /tts), which calls ElevenLabs
+/// ("Benitha - Rwandan Nurse 1" voice, handles Kinyarwanda and English).
 ///
-/// Uses the "Benitha - Rwandan Nurse 1" voice (flash v2.5).
-/// Handles both Kinyarwanda and English.
-/// API key loaded from frontend/.env → ELEVENLABS_API_KEY
+/// The ElevenLabs API key lives only on the server; the app never sees it.
 class TTSService {
   final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isSpeaking = false;
 
-  static const String _voiceId = 'cYewvtoDtKjvFBC0o8AH'; // Benitha - Rwandan Nurse 1
-  static const String _modelId = 'eleven_flash_v2_5';
-
-  String get _apiKey => dotenv.env['ELEVENLABS_API_KEY'] ?? '';
-
-  String get _endpoint =>
-      'https://api.elevenlabs.io/v1/text-to-speech/$_voiceId';
-
   bool get isSpeaking => _isSpeaking;
 
-  Future<Uint8List?> _synthesize(String text) async {
-    if (_apiKey.isEmpty) {
-      debugPrint('⚠️ ELEVENLABS_API_KEY not set in frontend/.env');
-      return null;
-    }
-
+  Future<Uint8List?> _synthesize(String text, String language) async {
     try {
       final response = await http.post(
-        Uri.parse(_endpoint),
+        Uri.parse('${ApiService.baseUrl}/tts'),
         headers: {
-          'xi-api-key': _apiKey,
           'Content-Type': 'application/json',
           'Accept': 'audio/mpeg',
+          // Required for ngrok free domains to skip the HTML warning page.
+          if (kIsWeb) 'ngrok-skip-browser-warning': 'true',
         },
-        body: jsonEncode({
-          'text': text,
-          'model_id': _modelId,
-          'voice_settings': {'stability': 0.50},
-        }),
+        body: jsonEncode({'text': text, 'language': language}),
       );
 
       if (response.statusCode == 200) {
         return response.bodyBytes;
-      } else {
-        debugPrint(
-          '❌ ElevenLabs error ${response.statusCode}: ${response.body}',
-        );
-        return null;
       }
+      debugPrint('❌ TTS backend error ${response.statusCode}: ${response.body}');
+      return null;
     } catch (e) {
-      debugPrint('❌ ElevenLabs request failed: $e');
+      debugPrint('❌ TTS request failed: $e');
       return null;
     }
   }
 
-  /// Speak text using ElevenLabs TTS.
-  /// Benitha handles both Kinyarwanda and English — no language parameter needed.
+  /// Speak text. Falls back to a silent pause if TTS is unavailable so the
+  /// kiosk flow keeps moving.
   Future<void> speak(String text, {String language = 'english'}) async {
     if (text.isEmpty) return;
 
@@ -71,7 +52,7 @@ class TTSService {
     debugPrint('🔊 TTS ($language): "$text"');
 
     try {
-      final audioBytes = await _synthesize(text);
+      final audioBytes = await _synthesize(text, language);
       if (audioBytes != null) {
         await platform.playAudioBytes(_audioPlayer, audioBytes);
         await _audioPlayer.onPlayerComplete.first;
