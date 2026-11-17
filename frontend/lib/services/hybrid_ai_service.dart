@@ -45,18 +45,52 @@ enum OnDeviceStatus {
       .firstWhere((s) => s.name == value, orElse: () => unavailable);
 }
 
+/// Why a prefer-on-device prompt was answered by the cloud instead.
+enum FallbackReason {
+  /// Nano took longer than the on-device deadline; it was cancelled.
+  timeout,
+
+  /// Nano threw an error.
+  deviceError,
+
+  /// Nano timed out recently, so it is skipped during a cool-down.
+  deviceSlow,
+
+  /// Nano is not downloaded / not supported on this browser.
+  deviceUnavailable;
+
+  static FallbackReason? fromWire(String? value) => switch (value) {
+    'timeout' => timeout,
+    'device_error' => deviceError,
+    'device_slow' => deviceSlow,
+    'device_unavailable' => deviceUnavailable,
+    _ => null,
+  };
+
+  String get wire => switch (this) {
+    timeout => 'timeout',
+    deviceError => 'device_error',
+    deviceSlow => 'device_slow',
+    deviceUnavailable => 'device_unavailable',
+  };
+}
+
 class HybridAIResult {
   const HybridAIResult({
     required this.text,
     required this.source,
     required this.mode,
     required this.latency,
+    this.fallbackReason,
   });
 
   final String text;
   final InferenceSource source;
   final InferenceMode mode;
   final Duration latency;
+
+  /// Set when a prefer-on-device prompt ended up in the cloud.
+  final FallbackReason? fallbackReason;
 
   bool get ranOnDevice => source == InferenceSource.onDevice;
 
@@ -72,6 +106,7 @@ class HybridAIResult {
   @override
   String toString() =>
       'HybridAIResult(source: ${source.wire}, mode: ${mode.wire}, '
+      'fallback: ${fallbackReason?.wire ?? '-'}, '
       'latency: ${latency.inMilliseconds}ms, text: $text)';
 }
 
@@ -97,6 +132,11 @@ class HybridAIService {
   /// cloud model are constrained to return matching JSON (read it via
   /// [HybridAIResult.json]).
   /// [cloudModel] overrides the default cloud Gemini model.
+  ///
+  /// With [InferenceMode.preferOnDevice], Nano gets [onDeviceTimeout]
+  /// (default 12 s) to answer; after that it is cancelled, the cloud answers,
+  /// and Nano is skipped for [slowDeviceCooldown] (default 5 min). The reason
+  /// is reported in [HybridAIResult.fallbackReason].
   static Future<HybridAIResult> generate({
     required String prompt,
     InferenceMode mode = InferenceMode.preferOnDevice,
@@ -105,6 +145,8 @@ class HybridAIService {
     String? cloudModel,
     double? temperature,
     int? maxOutputTokens,
+    Duration? onDeviceTimeout,
+    Duration? slowDeviceCooldown,
   }) async {
     final request = <String, dynamic>{
       'prompt': prompt,
@@ -114,6 +156,10 @@ class HybridAIService {
       if (cloudModel != null) 'cloudModel': cloudModel,
       if (temperature != null) 'temperature': temperature,
       if (maxOutputTokens != null) 'maxOutputTokens': maxOutputTokens,
+      if (onDeviceTimeout != null)
+        'onDeviceTimeoutMs': onDeviceTimeout.inMilliseconds,
+      if (slowDeviceCooldown != null)
+        'slowDeviceCooldownMs': slowDeviceCooldown.inMilliseconds,
     };
     try {
       final raw = await platform.generate(request);
@@ -122,6 +168,7 @@ class HybridAIService {
         source: InferenceSource.fromWire(raw.source),
         mode: InferenceMode.fromWire(raw.mode),
         latency: Duration(milliseconds: raw.latencyMs),
+        fallbackReason: FallbackReason.fromWire(raw.fallbackReason),
       );
     } on HybridAIException {
       rethrow;
@@ -129,6 +176,10 @@ class HybridAIService {
       throw HybridAIException(e.toString());
     }
   }
+
+  /// Clears the "device too slow" cool-down so the next prefer-on-device
+  /// prompt tries Nano again.
+  static Future<void> resetDeviceHealth() => platform.resetDeviceHealth();
 
   /// Current status of the on-device model.
   static Future<OnDeviceStatus> onDeviceAvailability() async {

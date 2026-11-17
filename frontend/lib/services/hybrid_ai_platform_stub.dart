@@ -2,11 +2,18 @@
 // Chrome (web/eleza_ai.js). Eleza currently targets web only.
 
 class RawHybridResult {
-  const RawHybridResult(this.text, this.source, this.mode, this.latencyMs);
+  const RawHybridResult(
+    this.text,
+    this.source,
+    this.mode,
+    this.latencyMs,
+    this.fallbackReason,
+  );
   final String text;
   final String source;
   final String mode;
   final int latencyMs;
+  final String? fallbackReason;
 }
 
 const bool isSupported = false;
@@ -22,3 +29,5 @@ Future<String> onDeviceAvailability() async => 'unsupported';
 
 Future<String> prepareOnDevice(void Function(double)? onProgress) async =>
     _unsupported();
+
+Future<void> resetDeviceHealth() async {}

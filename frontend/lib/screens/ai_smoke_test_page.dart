@@ -13,11 +13,18 @@ class AiSmokeTestPage extends StatefulWidget {
 }
 
 class _SmokeCase {
-  const _SmokeCase(this.label, this.mode, this.prompt, {this.jsonSchema});
+  const _SmokeCase(
+    this.label,
+    this.mode,
+    this.prompt, {
+    this.jsonSchema,
+    this.onDeviceTimeout,
+  });
   final String label;
   final InferenceMode mode;
   final String prompt;
   final Map<String, dynamic>? jsonSchema;
+  final Duration? onDeviceTimeout;
 }
 
 class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
@@ -48,6 +55,12 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
         },
         'required': ['chief_complaint', 'symptoms'],
       },
+    ),
+    _SmokeCase(
+      'Hybrid, 3 s on-device deadline (cloud fallback on slow devices)',
+      InferenceMode.preferOnDevice,
+      'In one sentence, what should a patient with chest pain do?',
+      onDeviceTimeout: Duration(seconds: 3),
     ),
   ];
 
@@ -91,10 +104,16 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
         prompt: c.prompt,
         mode: c.mode,
         jsonSchema: c.jsonSchema,
+        onDeviceTimeout: c.onDeviceTimeout,
       );
       final body = c.jsonSchema != null ? r.json.toString() : r.text.trim();
+      final fallback =
+          r.fallbackReason == null
+              ? ''
+              : '  •  fallback: ${r.fallbackReason!.wire}';
       out =
-          '✅ source: ${r.source.wire}  •  ${r.latency.inMilliseconds} ms\n$body';
+          '✅ source: ${r.source.wire}$fallback  •  '
+          '${r.latency.inMilliseconds} ms\n$body';
     } catch (e) {
       out = '❌ $e';
     }
@@ -136,6 +155,19 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
                     tooltip: 'Refresh',
                     icon: const Icon(Icons.refresh),
                     onPressed: _checkStatus,
+                  ),
+                  IconButton(
+                    tooltip: 'Reset "device too slow" cool-down',
+                    icon: const Icon(Icons.restart_alt),
+                    onPressed: () async {
+                      await HybridAIService.resetDeviceHealth();
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Nano will be tried again'),
+                        ),
+                      );
+                    },
                   ),
                   FilledButton(
                     onPressed: _prepare,
