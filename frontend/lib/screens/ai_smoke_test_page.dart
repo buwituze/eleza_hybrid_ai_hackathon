@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../services/clinical_ai.dart';
 import '../services/hybrid_ai_service.dart';
 
 /// Debug-only page (route: /ai-smoke-test) that proves Firebase AI Logic
@@ -126,10 +127,37 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
     }
   }
 
+  static const _translationLabel = 'Translation (Kinyarwanda → English, cloud)';
+
+  Future<void> _runTranslation() async {
+    setState(() {
+      _running.add(_translationLabel);
+      _results.remove(_translationLabel);
+    });
+    final step = await ClinicalAI.translateTurn(
+      question: 'Ni ryari ububabare bwatangiye?',
+      answer: 'Ndababara umutwe cyane kuva ejo, kandi mfite fièvre nijoro.',
+    );
+    final t = step.trace;
+    final out =
+        t == null
+            ? '❌ translation failed — original text kept'
+            : '✅ source: ${t.source.wire}  •  ${t.latency.inMilliseconds} ms\n'
+                'Q: ${step.value.question}\nA: ${step.value.answer}';
+    debugPrint('[AI smoke] $_translationLabel: $out');
+    if (mounted) {
+      setState(() {
+        _running.remove(_translationLabel);
+        _results[_translationLabel] = out;
+      });
+    }
+  }
+
   Future<void> _runAll() async {
     for (final c in _cases) {
       await _run(c);
     }
+    await _runTranslation();
   }
 
   @override
@@ -204,6 +232,25 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
                 ),
               ),
             ),
+          Card(
+            child: ListTile(
+              title: const Text(_translationLabel),
+              subtitle: SelectableText(
+                _running.contains(_translationLabel)
+                    ? 'running…'
+                    : (_results[_translationLabel] ??
+                        'Q: Ni ryari ububabare bwatangiye?\n'
+                            'A: Ndababara umutwe cyane kuva ejo, kandi mfite fièvre nijoro.'),
+              ),
+              trailing: IconButton(
+                icon: const Icon(Icons.play_circle_outline),
+                onPressed:
+                    _running.contains(_translationLabel)
+                        ? null
+                        : _runTranslation,
+              ),
+            ),
+          ),
         ],
       ),
     );
