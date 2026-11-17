@@ -161,6 +161,36 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
       );
       return '${_traceLine(step.trace)}\n${step.value}';
     },
+    'Model D — triage score (prefer cloud)': () async {
+      final step = await ClinicalAI.score(
+        extraction: const {
+          'chief_complaint': 'headache',
+          'severity': '7/10',
+          'duration': 'since yesterday',
+          'body_part': 'head',
+          'associated_symptoms': ['fever', 'light sensitivity'],
+          'red_flags_present': false,
+        },
+        patientAge: 28,
+      );
+      final s = step.value;
+      return '${_traceLine(step.trace)}\n'
+          'priority: ${s['priority']} • issue: ${s['suspected_issue']} • '
+          'confidence: ${s['confidence']}\nrisk factors: ${s['risk_factors']}';
+    },
+    'Model D — severe red flag (rule, no model)': () async {
+      final step = await ClinicalAI.score(
+        extraction: const {
+          'chief_complaint': 'chest pain',
+          'severity': 'severe',
+          'red_flags_present': true,
+          'associated_symptoms': ['shortness of breath'],
+        },
+      );
+      final s = step.value;
+      return '${step.trace == null ? '✅ no model call (deterministic rule)' : _traceLine(step.trace)}\n'
+          'priority: ${s['priority']} • issue: ${s['suspected_issue']}';
+    },
     'Model B — extraction (prefer on-device)': () async {
       final step = await ClinicalAI.extract(
         initial: 'I have had a bad headache since yesterday and some fever.',

@@ -69,6 +69,57 @@ class HybridKioskApi {
     if (response.statusCode != 200) _fail('extraction', response);
     return ExtractionResult.fromJson(jsonDecode(response.body));
   }
+
+  /// Sends the browser's Model D score (+ optional routing suggestion for
+  /// unclear issues). The backend applies triage safety rules and routes.
+  static Future<ScoreResult> submitScore({
+    required String sessionId,
+    required Map<String, dynamic> score,
+    Map<String, dynamic>? routingSuggestion,
+    List<AiTrace> traces = const [],
+  }) async {
+    final response = await http.post(
+      Uri.parse('${ApiService.baseUrl}/kiosk/$sessionId/score'),
+      headers: _jsonHeaders,
+      body: jsonEncode({
+        'score': score,
+        if (routingSuggestion != null) 'routing_suggestion': routingSuggestion,
+        'ai': [for (final t in traces) t.toJson()],
+      }),
+    );
+    if (response.statusCode != 200) _fail('score', response);
+    return ScoreResult.fromJson(jsonDecode(response.body));
+  }
+}
+
+class ScoreResult {
+  const ScoreResult({
+    required this.score,
+    required this.routing,
+    required this.lowConfidence,
+    required this.briefContext,
+  });
+
+  factory ScoreResult.fromJson(Map<String, dynamic> json) => ScoreResult(
+    score: (json['score'] as Map).cast<String, dynamic>(),
+    routing: (json['routing'] as Map).cast<String, dynamic>(),
+    lowConfidence: json['low_confidence'] as bool? ?? false,
+    briefContext: (json['brief_context'] as Map).cast<String, dynamic>(),
+  );
+
+  /// Score after backend validation + safety rules (may differ from the
+  /// model's: e.g. a red flag forces HIGH — see score['safety_override']).
+  final Map<String, dynamic> score;
+
+  /// department, queue, queue_number, location_hint, urgency_label.
+  final Map<String, dynamic> routing;
+  final bool lowConfidence;
+
+  /// Inputs for Models E and F (extraction, conversation, language, ...).
+  final Map<String, dynamic> briefContext;
+
+  String get priority => score['priority'] as String? ?? 'MEDIUM';
+  String get locationHint => routing['location_hint'] as String? ?? '';
 }
 
 class HybridKioskException implements Exception {

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 
 import 'hybrid_ai_service.dart';
@@ -315,6 +317,209 @@ class ClinicalAI {
             .trim();
     if (q.isEmpty || q.length > 250) return null;
     return q.endsWith('?') ? q : '$q?';
+  }
+
+  // ── Model D: triage score (prefer cloud) ────────────────────────────────
+  // Ported from backend/models/model_d.py. Safety-critical, so the stronger
+  // cloud model is preferred; the backend re-normalises the result and
+  // enforces red-flag rules (a red flag always means HIGH).
+
+  static const issueCategories = [
+    'cardiorespiratory-related complaint',
+    'neurological-related complaint',
+    'gastrointestinal-related complaint',
+    'musculoskeletal-related complaint',
+    'dermatological-related complaint',
+    'urological-related complaint',
+    'ENT-related complaint',
+    'general or systemic complaint',
+    'mental health-related complaint',
+    'obstetric or gynaecological complaint',
+    'paediatric-related complaint',
+    'unclear or unclassifiable complaint',
+  ];
+  static const unclearIssue = 'unclear or unclassifiable complaint';
+
+  static const _scoreSystem =
+      'You are a clinical triage scoring assistant. Output a risk score for '
+      'clinician review only.\n'
+      'Rules:\n'
+      '- No diagnosis, no treatment advice, no patient-facing language.\n'
+      '- Output valid JSON only matching the schema.\n'
+      '- suspected_issue must be exactly one value from the allowed list.';
+
+  static const _triageRules =
+      'HIGH: red flag present, OR severity severe/extreme/8-10, OR acute rapid '
+      'onset, OR infant/elderly with moderate+ symptoms.\n'
+      'MEDIUM: moderate severity (4-7/10), symptom hours to days, mild '
+      'associated symptoms, no red flags.\n'
+      'LOW: mild severity (1-3/10), stable for days to weeks, no associated '
+      'symptoms, no red flags.\n'
+      'Confidence: 0.8-1.0 if severity + duration + red flag status all known. '
+      '0.5-0.79 if one missing. Below 0.5 if most missing.\n'
+      'Risk factors: observable facts only. Max 4. Short phrases.';
+
+  static const _scoreSchema = <String, dynamic>{
+    'type': 'object',
+    'properties': {
+      'priority': {
+        'type': 'string',
+        'enum': ['HIGH', 'MEDIUM', 'LOW'],
+      },
+      'suspected_issue': {'type': 'string', 'enum': issueCategories},
+      'risk_factors': {
+        'type': 'array',
+        'items': {'type': 'string'},
+      },
+      'confidence': {'type': 'number'},
+    },
+    'required': ['priority', 'suspected_issue', 'risk_factors', 'confidence'],
+  };
+
+  static const _severeWords = {
+    'severe',
+    'extreme',
+    'unbearable',
+    'very severe',
+  };
+
+  /// Model D. Returns {priority, suspected_issue, risk_factors, confidence}.
+  /// A confirmed severe red flag is scored HIGH without calling a model (same
+  /// rule as the server). On failure returns a MEDIUM/unclear score with
+  /// confidence 0 — the backend still applies the red-flag rules.
+  static Future<AiStep<Map<String, dynamic>>> score({
+    required Map<String, dynamic> extraction,
+    int? patientAge,
+  }) async {
+    final complaint = (extraction['chief_complaint'] ?? '').toString();
+    final severity = (extraction['severity'] ?? '').toString().toLowerCase();
+    final redFlag = extraction['red_flags_present'] == true;
+    final symptoms = [
+      for (final s in (extraction['associated_symptoms'] as List? ?? const []))
+        s.toString(),
+    ];
+
+    if (redFlag && _severeWords.contains(severity)) {
+      final cardio = RegExp(
+        'chest|breath|heart',
+      ).hasMatch(complaint.toLowerCase());
+      return AiStep({
+        'priority': 'HIGH',
+        'suspected_issue':
+            cardio
+                ? 'cardiorespiratory-related complaint'
+                : 'general or systemic complaint',
+        'risk_factors': [complaint, ...symptoms].take(4).toList(),
+        'confidence': 0.95,
+      }, null);
+    }
+
+    final data = {
+      'symptom': complaint.isEmpty ? 'unknown' : complaint,
+      'severity': extraction['severity'] ?? 'unknown',
+      'duration': extraction['duration'] ?? 'unknown',
+      'body_part': extraction['body_part'] ?? 'unknown',
+      'associated_symptoms': symptoms,
+      'red_flags_present': extraction['red_flags_present'],
+      'age': patientAge,
+    };
+    final prompt =
+        'Patient data:\n${const JsonEncoder.withIndent('  ').convert(data)}\n\n'
+        'Allowed categories:\n${issueCategories.map((c) => '- $c').join('\n')}\n\n'
+        'Triage rules:\n$_triageRules\n\n'
+        'Return the risk score JSON only.';
+
+    try {
+      final r = await HybridAIService.generate(
+        prompt: prompt,
+        mode: ClinicalAIConfig.modeFor(ClinicalStep.score, language: 'english'),
+        systemInstruction: _scoreSystem,
+        jsonSchema: _scoreSchema,
+        temperature: 0,
+        maxOutputTokens: 300,
+        onDeviceTimeout: ClinicalAIConfig.onDeviceTimeout,
+      );
+      final raw = (r.json as Map).cast<String, dynamic>();
+      return AiStep(raw, AiTrace.fromResult(ClinicalStep.score, r));
+    } catch (e) {
+      debugPrint('⚠️ Model D failed, sending unclear/MEDIUM score: $e');
+      return AiStep({
+        'priority': 'MEDIUM',
+        'suspected_issue': unclearIssue,
+        'risk_factors': <String>[],
+        'confidence': 0.0,
+      }, null);
+    }
+  }
+
+  // ── Routing suggestion for unclear issues (prefer cloud) ────────────────
+  // Ported from backend routing/queue_routing.py suggest_unclear_issue_routing.
+  // Department names must match the backend's _DEPARTMENT_CONFIG; anything
+  // else is mapped to General Medicine by the backend.
+
+  static const departments = [
+    'Emergency',
+    'General Medicine',
+    'Orthopaedics',
+    'Dermatology',
+    'Urology',
+    'ENT',
+    'Mental Health',
+    'Gynaecology',
+    'Paediatrics',
+    'Ophthalmology',
+  ];
+
+  static const _routingSchema = <String, dynamic>{
+    'type': 'object',
+    'properties': {
+      'department': {'type': 'string', 'enum': departments},
+      'suspected_issue': {'type': 'string'},
+      'confidence': {'type': 'number'},
+      'reason': {'type': 'string'},
+    },
+    'required': ['department', 'suspected_issue', 'confidence', 'reason'],
+  };
+
+  /// Only needed when Model D says the issue is unclear. Returns null on
+  /// failure (the backend then routes to General Medicine).
+  static Future<AiStep<Map<String, dynamic>?>> suggestRouting({
+    required Map<String, dynamic> extraction,
+    required List<TranslatedTurn> turns,
+  }) async {
+    final convo =
+        turns.isEmpty
+            ? '(no follow-up conversation)'
+            : turns.map((t) => 'Q: ${t.question}\nA: ${t.answer}').join('\n');
+    final prompt =
+        'The triage issue label is unclear. Choose the best destination '
+        'department and a short, specific issue label (e.g. '
+        '"ophthalmology-related complaint").\n\n'
+        'Structured extraction:\n'
+        '${const JsonEncoder.withIndent('  ').convert(extraction)}\n\n'
+        'Conversation:\n$convo\n\nReturn JSON only.';
+    try {
+      final r = await HybridAIService.generate(
+        prompt: prompt,
+        mode: ClinicalAIConfig.modeFor(
+          ClinicalStep.routing,
+          language: 'english',
+        ),
+        systemInstruction:
+            'You are a clinical routing assistant at a hospital. No diagnosis.',
+        jsonSchema: _routingSchema,
+        temperature: 0,
+        maxOutputTokens: 250,
+        onDeviceTimeout: ClinicalAIConfig.onDeviceTimeout,
+      );
+      return AiStep(
+        (r.json as Map).cast<String, dynamic>(),
+        AiTrace.fromResult(ClinicalStep.routing, r),
+      );
+    } catch (e) {
+      debugPrint('⚠️ Routing suggestion failed: $e');
+      return const AiStep(null, null);
+    }
   }
 
   static Map<String, dynamic> _normaliseExtraction(Map<String, dynamic> raw) {
