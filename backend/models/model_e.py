@@ -3,6 +3,7 @@ models/model_e.py — Patient-facing guidance message generator.
 """
 
 import os
+import re
 from typing import Optional
 from google import genai
 from .gemini_utils import generate_with_fallback
@@ -36,9 +37,23 @@ _FALLBACK = {
 _FORBIDDEN = [
     "you have", "you may have", "this is", "this could be", "diagnosis",
     "heart attack", "stroke", "cancer", "infection",
-    "take", "medication", "rest", "drink water", "avoid",
+    "medication", "rest", "drink water", "avoid",
     "life-threatening", "critical",
 ]
+# Matched as whole words/phrases (plain substring matching rejected safe text,
+# e.g. "rest" in "interest"). "take" alone used to reject "please take a seat"
+# — the model's own example — so it is only forbidden with a medicine word.
+_FORBIDDEN_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(p) for p in _FORBIDDEN) + r")\b"
+    r"|\btake\s+(?:\w+\s+)?(?:medicines?|medications?|pills?|tablets?|"
+    r"painkillers?|paracetamol|aspirin|antibiotics?|drugs?)\b",
+    re.IGNORECASE,
+)
+
+
+def contains_forbidden(text: str) -> bool:
+    """True if a patient message contains diagnosis/advice language."""
+    return bool(_FORBIDDEN_RE.search(text or ""))
 
 _SYSTEM = """You are a healthcare system assistant in a hospital.
 Explain the next steps to a patient using only the system's decision.
@@ -123,8 +138,7 @@ Now generate for:
         return templates.get(priority, templates["UNKNOWN"])
 
     # Safety check — fall back if forbidden content detected
-    lowered = message.lower()
-    if any(phrase in lowered for phrase in _FORBIDDEN):
+    if contains_forbidden(message):
         return templates.get(priority, templates["UNKNOWN"])
 
     return message
@@ -146,7 +160,7 @@ def vet_message(message: str, language: str, priority: str,
     text = (message or "").strip()
     if (low_confidence or str(priority).upper() not in ("HIGH", "MEDIUM", "LOW")
             or not text or len(text) > 1000
-            or any(phrase in text.lower() for phrase in _FORBIDDEN)):
+            or contains_forbidden(text)):
         if low_confidence:
             return _FALLBACK.get(language, _FALLBACK["english"])["UNKNOWN"], True
         return fallback_message(language, priority), True
