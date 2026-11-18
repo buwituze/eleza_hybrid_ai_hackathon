@@ -4,6 +4,7 @@ import 'package:gif_view/gif_view.dart';
 import '../services/api_service.dart';
 import '../services/audio_service.dart';
 import '../services/hybrid_ai_service.dart';
+import '../services/hybrid_kiosk_flow.dart';
 import '../services/tts_service.dart';
 
 enum SessionState {
@@ -23,6 +24,8 @@ class VoiceInterfacePage extends StatefulWidget {
 class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
   // Session state
   String? _sessionId;
+  HybridKioskSession?
+  _hybrid; // AI steps run in the browser (Firebase AI Logic)
   bool _isSessionActive = false;
   SessionState _sessionState = SessionState.idle;
   String? _currentQuestion;
@@ -143,6 +146,7 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
 
       setState(() {
         _sessionId = response.sessionId;
+        _hybrid = HybridKioskSession(response.sessionId);
         _isSessionActive = true;
         _sessionState = SessionState.waitingForInitialComplaint;
         _isProcessing = false;
@@ -176,6 +180,7 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
       _isSessionActive = false;
       _sessionState = SessionState.idle;
       _sessionId = null;
+      _hybrid = null;
       _currentQuestion = null;
       _isRecording = false;
       _isProcessing = false;
@@ -243,44 +248,12 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
 
   Future<void> _submitInitialComplaint(String audioFilePath) async {
     try {
-      final language = _currentLanguage;
-      debugPrint('Submitting initial audio to: /kiosk/$_sessionId/audio');
-      final response = await _apiService.submitInitialAudio(
-        sessionId: _sessionId!,
+      debugPrint('Hybrid flow: initial complaint for session $_sessionId');
+      final next = await _hybrid!.submitInitial(
         audioFilePath: audioFilePath,
-        language: language,
+        languageHint: _currentLanguage,
       );
-      debugPrint('Received response: ${response.question}');
-
-      setState(() {
-        _currentQuestion = response.question;
-        _sessionState = SessionState.waitingForAnswer;
-        _isProcessing = false;
-        if (response.patientName.isNotEmpty) {
-          _patientName = response.patientName;
-        }
-        if (response.patientPhone.isNotEmpty) {
-          _patientPhone = response.patientPhone;
-        }
-      });
-
-      // Trigger TTS confirmation if both name and phone are present and not yet confirmed
-      if (_patientName.isNotEmpty &&
-          _patientPhone.isNotEmpty &&
-          !_patientInfoConfirmed) {
-        _patientInfoConfirmed = true;
-        String confirmText;
-        if (_currentLanguage == 'kinyarwanda') {
-          confirmText =
-              'Twashyize amazina yawe na nimero ya telepone kuri ecran. Reba maze wemeze ko aribyo. Amazina yawe ni $_patientName na nimero yawe ni $_patientPhone. Ese ni byo?';
-        } else {
-          confirmText =
-              'We have displayed your names on the screen. Please check if it\'s correct. Your name is $_patientName and your phone number is $_patientPhone. Is this correct?';
-        }
-        await _speakText(confirmText);
-      } else {
-        await _speakText(response.question);
-      }
+      await _applyNextStep(next);
     } catch (e) {
       debugPrint('Error submitting initial complaint: $e');
       _showError('Failed to submit audio: $e');
@@ -294,51 +267,9 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
 
   Future<void> _submitAnswer(String audioFilePath) async {
     try {
-      debugPrint('Submitting answer to: /kiosk/$_sessionId/answer');
-      final response = await _apiService.submitAnswer(
-        sessionId: _sessionId!,
-        question: _currentQuestion!,
-        audioFilePath: audioFilePath,
-      );
-      debugPrint(
-        'Received response: coverage_complete=${response.coverageComplete}',
-      );
-
-      if (response.coverageComplete) {
-        debugPrint('Coverage complete, finishing session...');
-        await _finishSession();
-      } else {
-        debugPrint('Next question: ${response.question}');
-        setState(() {
-          _currentQuestion = response.question;
-          _sessionState = SessionState.waitingForAnswer;
-          _isProcessing = false;
-          if (response.patientName.isNotEmpty) {
-            _patientName = response.patientName;
-          }
-          if (response.patientPhone.isNotEmpty) {
-            _patientPhone = response.patientPhone;
-          }
-        });
-
-        // Trigger TTS confirmation if both name and phone are present and not yet confirmed
-        if (_patientName.isNotEmpty &&
-            _patientPhone.isNotEmpty &&
-            !_patientInfoConfirmed) {
-          _patientInfoConfirmed = true;
-          String confirmText;
-          if (_currentLanguage == 'kinyarwanda') {
-            confirmText =
-                'Twashyize amazina yawe kuri ecran. Nyamuneka reba niba ari yo. Amazina yawe ni $_patientName na nimero yawe ni $_patientPhone. Ese ni byo?';
-          } else {
-            confirmText =
-                'We have displayed your names on the screen. Please check if it\'s correct. Your name is $_patientName and your phone number is $_patientPhone. Is this correct?';
-          }
-          await _speakText(confirmText);
-        } else {
-          await _speakText(response.question);
-        }
-      }
+      debugPrint('Hybrid flow: answer to "${_hybrid!.currentQuestion}"');
+      final next = await _hybrid!.submitAnswer(audioFilePath: audioFilePath);
+      await _applyNextStep(next);
     } catch (e) {
       debugPrint('Error submitting answer: $e');
       _showError('Failed to submit answer: $e');
@@ -350,15 +281,45 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
     }
   }
 
+  /// Shows/speaks the next question, or finishes when coverage is complete.
+  Future<void> _applyNextStep(KioskNextStep next) async {
+    if (next.coverageComplete) {
+      debugPrint('Coverage complete, finishing session...');
+      await _finishSession();
+      return;
+    }
+    final question = next.question ?? '';
+    setState(() {
+      _currentQuestion = question;
+      _sessionState = SessionState.waitingForAnswer;
+      _isProcessing = false;
+      if (next.patientName.isNotEmpty) _patientName = next.patientName;
+      if (next.patientPhone.isNotEmpty) _patientPhone = next.patientPhone;
+    });
+
+    // Confirm name + phone once, then still ask the actual question (the
+    // answer is recorded against the question the session really asked).
+    if (_patientName.isNotEmpty &&
+        _patientPhone.isNotEmpty &&
+        !_patientInfoConfirmed) {
+      _patientInfoConfirmed = true;
+      final confirmText =
+          _currentLanguage == 'kinyarwanda'
+              ? 'Twashyize amazina yawe na nimero ya telefone kuri ecran. Reba ko aribyo. Amazina yawe ni $_patientName na nimero yawe ni $_patientPhone.'
+              : 'We have displayed your name and phone number on the screen. Please check that they are correct. Your name is $_patientName and your phone number is $_patientPhone.';
+      await _speakText(confirmText);
+    }
+    await _speakText(question);
+  }
+
   Future<void> _finishSession() async {
-    if (_sessionId == null) return;
+    if (_sessionId == null || _hybrid == null) return;
 
     setState(() => _isProcessing = true);
     _updateStatusMessage();
 
     try {
-      final response = await _apiService.finishSession(
-        sessionId: _sessionId!,
+      final response = await _hybrid!.finish(
         patientName: _patientName,
         patientPhone: _patientPhone,
       );
@@ -381,6 +342,7 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
         );
       }
     } catch (e) {
+      debugPrint('Error finishing session: $e');
       _showError('finish_failed'.tr());
       setState(() => _isProcessing = false);
     }
@@ -442,6 +404,7 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
       _isSessionActive = false;
       _sessionState = SessionState.idle;
       _sessionId = null;
+      _hybrid = null;
       _currentQuestion = null;
       _patientName = '';
       _patientPhone = '';
@@ -507,7 +470,8 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
                                 opacity: 0,
                                 child: IgnorePointer(
                                   child: LanguageDropdown(
-                                    currentLanguage: context.locale.languageCode,
+                                    currentLanguage:
+                                        context.locale.languageCode,
                                     onLanguageChange: (_) {},
                                   ),
                                 ),
