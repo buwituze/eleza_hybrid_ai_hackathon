@@ -32,9 +32,12 @@ class KioskNextStep {
 /// see Kinyarwanda, and the question that was really asked (independent of
 /// what the UI happens to be speaking).
 class HybridKioskSession {
-  HybridKioskSession(this.sessionId);
+  HybridKioskSession(this.sessionId, {this.onTrace});
 
   final String sessionId;
+
+  /// Called as soon as each AI step finishes (drives the live kiosk badge).
+  final void Function(AiTrace trace)? onTrace;
 
   String _language = 'kinyarwanda';
   String _initialEn = '';
@@ -51,7 +54,9 @@ class HybridKioskSession {
   final List<AiTrace> traces = [];
 
   void _keep(AiTrace? t) {
-    if (t != null) traces.add(t);
+    if (t == null) return;
+    traces.add(t);
+    onTrace?.call(t);
   }
 
   /// The patient's opening complaint.

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../components/ai_badges.dart';
 import '../components/app_navbar.dart';
 import '../components/assign_room_dialog.dart';
 import '../components/assigned_exams_modal.dart';
@@ -176,6 +177,8 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
       suspectedIssue: doctorBrief['suspected_issue']?.toString(),
       confidenceScore: _asDouble(doctorBrief['confidence_score']),
       priority: (doctorBrief['priority'] ?? 'low').toString(),
+      aiTrace: AiTraceSummary.tracesFrom(doctorBrief['ai_trace']),
+      safetyOverride: doctorBrief['safety_override']?.toString(),
     );
   }
 
@@ -384,16 +387,18 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
             ],
             activeItem: 'All Patients',
             onSettingsTap: () {},
-            onPatientTap: (id) => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => PatientDetailPage(
-                  userRole: widget.userRole,
-                  userName: widget.userName,
-                  userSpecialty: widget.userSpecialty,
-                  initialPatientId: id,
+            onPatientTap:
+                (id) => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder:
+                        (_) => PatientDetailPage(
+                          userRole: widget.userRole,
+                          userName: widget.userName,
+                          userSpecialty: widget.userSpecialty,
+                          initialPatientId: id,
+                        ),
+                  ),
                 ),
-              ),
-            ),
           ),
           Expanded(
             child: LayoutBuilder(
@@ -760,17 +765,20 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
 
   Widget _structuredInfoCard() {
     final sessionStart = _parseDateTime(_selectedSessionDetail?.startTime);
-    final chiefComplaint = (_patientBrief?.chiefComplaint?.isNotEmpty == true
-            ? _patientBrief!.chiefComplaint
-            : _selectedSessionDetail?.extractionData?['chief_complaint']
-                    ?.toString() ??
-                '--')
-        .trim();
-    final duration = (_patientBrief?.duration?.isNotEmpty == true
-            ? _patientBrief!.duration!
-            : _selectedSessionDetail?.extractionData?['duration']?.toString() ??
-                '--')
-        .trim();
+    final chiefComplaint =
+        (_patientBrief?.chiefComplaint?.isNotEmpty == true
+                ? _patientBrief!.chiefComplaint
+                : _selectedSessionDetail?.extractionData?['chief_complaint']
+                        ?.toString() ??
+                    '--')
+            .trim();
+    final duration =
+        (_patientBrief?.duration?.isNotEmpty == true
+                ? _patientBrief!.duration!
+                : _selectedSessionDetail?.extractionData?['duration']
+                        ?.toString() ??
+                    '--')
+            .trim();
     final suggestedIssue =
         (_patientBrief?.suspectedIssue ??
                 _selectedSessionDetail?.prediction?['predicted_condition']
@@ -831,6 +839,21 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
             _sectionTitle('Key Findings'),
             ...keyFindings.map(_bulletText),
           ],
+          if (_patientBrief?.safetyOverride != null) ...[
+            const SizedBox(height: 10),
+            _sectionTitle('Triage Safety Rule'),
+            _bulletText(
+              _patientBrief!.safetyOverride == 'severe_red_flag'
+                  ? 'Priority set to HIGH by rule: confirmed severe red flag.'
+                  : 'Priority raised to HIGH by rule: red flag present.',
+            ),
+          ],
+          if (_patientBrief?.aiTrace.isNotEmpty == true) ...[
+            const SizedBox(height: 10),
+            _sectionTitle('AI Processing'),
+            const SizedBox(height: 6),
+            AiTraceSummary(traces: _patientBrief!.aiTrace, dense: true),
+          ],
         ],
       ),
     );
@@ -859,10 +882,7 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
             'Queue Number',
             queueNumber != null ? '#$queueNumber' : '--',
           ),
-          _fieldRow(
-            'Queue Status',
-            queueStatus.isEmpty ? '--' : queueStatus,
-          ),
+          _fieldRow('Queue Status', queueStatus.isEmpty ? '--' : queueStatus),
           _fieldRow(
             'Priority',
             priority.isEmpty ? '--' : priority.toUpperCase(),
@@ -1354,6 +1374,12 @@ class PatientBrief {
   final double? confidenceScore;
   final String priority;
 
+  /// Where each AI step ran (Firebase AI Logic: on-device Nano or cloud).
+  final List<Map<String, dynamic>> aiTrace;
+
+  /// Set when a backend triage safety rule overrode the model's score.
+  final String? safetyOverride;
+
   const PatientBrief({
     required this.narrativeSummary,
     required this.keyFindings,
@@ -1367,5 +1393,7 @@ class PatientBrief {
     this.suspectedIssue,
     this.confidenceScore,
     required this.priority,
+    this.aiTrace = const [],
+    this.safetyOverride,
   });
 }
