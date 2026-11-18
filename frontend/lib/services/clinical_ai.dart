@@ -617,6 +617,109 @@ class ClinicalAI {
     }
   }
 
+  // ── Model F: doctor brief (prefer on-device) ────────────────────────────
+  // Ported from backend/models/model_f.py. The brief summarises the most
+  // sensitive data of the session, so it prefers Gemini Nano. It works on
+  // English text (translated turns for Kinyarwanda sessions). The model only
+  // writes the narrative parts; the backend assembles the full brief
+  // (model_f.build_brief) and falls back to a factual template if needed.
+
+  static const _briefSystem =
+      'You are a clinical documentation assistant. Write a patient brief for '
+      'a doctor.\n'
+      'Rules:\n'
+      '- Report only what the patient said and what the system recorded.\n'
+      '- No clinical interpretation, diagnosis, or advice.\n'
+      '- Clinical language. Past tense. Concise.\n'
+      '- Output valid JSON only matching the schema.';
+
+  static const _briefSchema = <String, dynamic>{
+    'type': 'object',
+    'properties': {
+      'narrative_summary': {'type': 'string'},
+      'key_findings': {
+        'type': 'array',
+        'items': {'type': 'string'},
+      },
+      'red_flag_note': {'type': 'string'},
+    },
+    'required': ['narrative_summary', 'key_findings', 'red_flag_note'],
+  };
+
+  /// Model F. Returns {narrative_summary, key_findings, red_flag_note}.
+  /// [turns] must be English (pass the translated turns for Kinyarwanda
+  /// sessions). On failure returns an empty map; the backend then writes a
+  /// factual template summary.
+  static Future<AiStep<Map<String, dynamic>>> brief({
+    required String sessionId,
+    required Map<String, dynamic> extraction,
+    required Map<String, dynamic> score,
+    required List<TranslatedTurn> turns,
+    required String language,
+    int? patientAge,
+  }) async {
+    String field(String key) {
+      final v = (extraction[key] ?? '').toString().trim();
+      return v.isEmpty ? 'not recorded' : v;
+    }
+
+    final redFlag = switch (extraction['red_flags_present']) {
+      true => 'YES',
+      false => 'No',
+      _ => 'Unknown',
+    };
+    final symptoms = (extraction['associated_symptoms'] as List? ?? const [])
+        .join(', ');
+    final riskFactors = (score['risk_factors'] as List? ?? const []).join(', ');
+    final confidence = (score['confidence'] as num?)?.toDouble() ?? 0.0;
+    final convo =
+        turns.isEmpty
+            ? '  (none)'
+            : turns
+                .map((t) => '  Q: ${t.question ?? ''}\n  A: ${t.answer}')
+                .join('\n');
+
+    final prompt =
+        'Session: $sessionId | Language: $language | '
+        'Age: ${patientAge ?? 'unknown'}\n\n'
+        'Structured symptoms:\n'
+        '  Chief complaint : ${field('chief_complaint')}\n'
+        '  Body part       : ${field('body_part')}\n'
+        '  Duration        : ${field('duration')}\n'
+        '  Severity        : ${field('severity')}\n'
+        '  Other symptoms  : ${symptoms.isEmpty ? 'none' : symptoms}\n'
+        '  Red flag        : $redFlag\n'
+        '  Observations    : ${(extraction['additional_observations'] ?? '').toString().trim().isEmpty ? 'none' : extraction['additional_observations']}\n\n'
+        'Conversation (English):\n$convo\n\n'
+        'Risk score:\n'
+        '  Priority        : ${score['priority'] ?? 'unknown'}\n'
+        '  Suspected issue : ${score['suspected_issue'] ?? 'not determined'}\n'
+        '  Risk factors    : ${riskFactors.isEmpty ? 'none' : riskFactors}\n'
+        '  Confidence      : ${confidence.toStringAsFixed(2)}\n\n'
+        'Write narrative_summary (2-4 factual sentences), key_findings (short '
+        'facts) and red_flag_note (one sentence if a red flag is present, '
+        'otherwise an empty string). JSON only.';
+
+    try {
+      final r = await HybridAIService.generate(
+        prompt: prompt,
+        mode: ClinicalAIConfig.modeFor(ClinicalStep.brief, language: 'english'),
+        systemInstruction: _briefSystem,
+        jsonSchema: _briefSchema,
+        temperature: 0.1,
+        maxOutputTokens: 600,
+        onDeviceTimeout: ClinicalAIConfig.onDeviceTimeout,
+      );
+      return AiStep(
+        (r.json as Map).cast<String, dynamic>(),
+        AiTrace.fromResult(ClinicalStep.brief, r),
+      );
+    } catch (e) {
+      debugPrint('⚠️ Model F failed, backend will write a template brief: $e');
+      return const AiStep(<String, dynamic>{}, null);
+    }
+  }
+
   static Map<String, dynamic> _normaliseExtraction(Map<String, dynamic> raw) {
     final out = <String, dynamic>{
       for (final f in _extractionStringFields)

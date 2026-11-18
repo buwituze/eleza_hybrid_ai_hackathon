@@ -218,6 +218,40 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
       );
       return '${_traceLine(step.trace)}\n${step.value}';
     },
+    'Model F — doctor brief (prefer on-device)': () async {
+      final step = await ClinicalAI.brief(
+        sessionId: 'smoke-test',
+        extraction: const {
+          'chief_complaint': 'headache',
+          'body_part': 'head',
+          'duration': 'since yesterday',
+          'severity': '7/10',
+          'associated_symptoms': ['fever', 'light sensitivity'],
+          'red_flags_present': false,
+        },
+        score: const {
+          'priority': 'MEDIUM',
+          'suspected_issue': 'neurological-related complaint',
+          'risk_factors': ['severity 7/10', 'fever'],
+          'confidence': 0.85,
+        },
+        turns: const [
+          TranslatedTurn(
+            question: 'How strong is the pain from 1 to 10?',
+            answer: 'About seven',
+          ),
+          TranslatedTurn(
+            question: 'Any other symptoms?',
+            answer: 'Fever at night and light hurts my eyes',
+          ),
+        ],
+        language: 'kinyarwanda',
+        patientAge: 28,
+      );
+      final b = step.value;
+      return '${_traceLine(step.trace)}\n${b['narrative_summary']}\n'
+          'findings: ${b['key_findings']}';
+    },
     'Model B — extraction (prefer on-device)': () async {
       final step = await ClinicalAI.extract(
         initial: 'I have had a bad headache since yesterday and some fever.',

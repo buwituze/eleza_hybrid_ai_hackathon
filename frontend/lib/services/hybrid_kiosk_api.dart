@@ -90,6 +90,34 @@ class HybridKioskApi {
     if (response.statusCode != 200) _fail('score', response);
     return ScoreResult.fromJson(jsonDecode(response.body));
   }
+
+  /// Sends the Model E message + Model F brief fields. The backend vets the
+  /// message, assembles the brief, persists the session, queues the patient
+  /// and sends the SMS. Returns the routing shown on the completion screen.
+  static Future<FinishResponse> complete({
+    required String sessionId,
+    required String patientMessage,
+    required Map<String, dynamic> brief,
+    String patientName = '',
+    String patientPhone = '',
+    String patientLocation = '',
+    List<AiTrace> traces = const [],
+  }) async {
+    final response = await http.post(
+      Uri.parse('${ApiService.baseUrl}/kiosk/$sessionId/complete'),
+      headers: _jsonHeaders,
+      body: jsonEncode({
+        'patient_message': patientMessage,
+        'brief': brief,
+        'patient_name': patientName,
+        'patient_phone': patientPhone,
+        'patient_location': patientLocation,
+        'ai': [for (final t in traces) t.toJson()],
+      }),
+    );
+    if (response.statusCode != 200) _fail('complete', response);
+    return FinishResponse.fromJson(jsonDecode(response.body));
+  }
 }
 
 class ScoreResult {
