@@ -1,0 +1,7 @@
+# Pylint config for editors run from the repo root (e.g. the VS Code Pylint
+# extension). The FastAPI backend runs with backend/ as its working directory
+# (`uvicorn main:app`), so imports like `from session import ...` and
+# `from routers.kiosk import ...` are relative to backend/. Put backend/ on
+# Pylint's path so those imports resolve.
+[MAIN]
+init-hook="import os, sys; from pylint.config import find_default_config_files; root = os.path.dirname(os.path.abspath(next(find_default_config_files(), '.pylintrc'))); sys.path.insert(0, os.path.join(root, 'backend'))"
