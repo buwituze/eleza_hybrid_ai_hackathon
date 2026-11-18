@@ -522,6 +522,101 @@ class ClinicalAI {
     }
   }
 
+  // ── Model E: patient guidance message ───────────────────────────────────
+  // Ported from backend/models/model_e.py. Patient-facing, in the session
+  // language: English → prefer on-device; Kinyarwanda → cloud.
+  // The backend vets the result (no diagnosis/advice words, length) and
+  // swaps in a safe template if needed, so the kiosk always gets a message.
+
+  static const _guidanceSystem =
+      'You are a healthcare system assistant in a hospital.\n'
+      'Explain the next steps to a patient using only the system\'s decision.\n'
+      'Rules:\n'
+      '- No disease names. No diagnosis. No medical advice. No causes.\n'
+      '- Do not change the priority level.\n'
+      '- 3 to 5 short sentences. Calm and clear.\n'
+      '- Output the patient message only.\n'
+      '- Write entirely in the language given in the Language field.';
+
+  // Few-shot examples folded into one prompt (on-device is single-turn only).
+  static const _guidanceExamples =
+      'Example:\nPriority: HIGH\nComplaint: chest pain\n'
+      'Location: Emergency, Desk 3\nLanguage: english\n'
+      'Response: Your symptoms need prompt medical attention. Please proceed '
+      'to Emergency, Desk 3 right away. A healthcare professional will see you '
+      'shortly. If you feel worse at any time, please notify a staff member '
+      'immediately.\n\n'
+      'Example:\nPriority: HIGH\nComplaint: ububabare bw\'igituza\n'
+      'Location: Emergency, Desk 3\nLanguage: kinyarwanda\n'
+      'Response: Ibimenyetso byawe bisaba ubuvuzi bwihutirwa. Nyamuneka jya '
+      'kuri Emergency, Desk 3 vuba. Umuganga azakureba vuba. Niba wumvise ko '
+      'ibintu birushijeho kuba bibi, menyesha umukozi uhari ako kanya.\n\n'
+      'Example:\nPriority: MEDIUM\nComplaint: headache\n'
+      'Location: Waiting Area B\nLanguage: english\n'
+      'Response: Thank you for sharing your information. Please take a seat in '
+      'Waiting Area B and a healthcare professional will see you soon. If your '
+      'condition changes while you wait, please let a staff member know.\n\n'
+      'Example:\nPriority: LOW\nComplaint: sore throat\n'
+      'Location: General Outpatient\nLanguage: english\n'
+      'Response: Thank you. Your information has been recorded. Please wait in '
+      'the General Outpatient area and you will be called when it is your '
+      'turn.';
+
+  /// Model E. [score] and [locationHint] come from POST /score (after the
+  /// backend's safety rules). Returns an empty message — no model call — when
+  /// confidence is low or the model fails; the backend then uses its safe
+  /// template for that priority.
+  static Future<AiStep<String>> guidance({
+    required Map<String, dynamic> extraction,
+    required Map<String, dynamic> score,
+    required String language,
+    required String locationHint,
+    bool lowConfidence = false,
+  }) async {
+    final priority = (score['priority'] ?? 'UNKNOWN').toString().toUpperCase();
+    if (lowConfidence || !{'HIGH', 'MEDIUM', 'LOW'}.contains(priority)) {
+      return const AiStep('', null); // backend: UNKNOWN template
+    }
+    String field(String key) {
+      final v = (extraction[key] ?? '').toString().trim();
+      return v.isEmpty ? 'not specified' : v;
+    }
+
+    final redFlag = extraction['red_flags_present'] == true;
+    final prompt =
+        '$_guidanceExamples\n\nNow generate for:\n'
+        'Priority: $priority\n'
+        'Complaint: ${field('chief_complaint')}\n'
+        'Duration: ${field('duration')}\n'
+        'Severity: ${field('severity')}\n'
+        'Red flag: ${redFlag ? 'yes' : 'no'}\n'
+        'Location: ${locationHint.isEmpty ? 'not specified' : locationHint}\n'
+        'Language: $language\n'
+        'Response:';
+
+    try {
+      final r = await HybridAIService.generate(
+        prompt: prompt,
+        mode: ClinicalAIConfig.modeFor(
+          ClinicalStep.guidance,
+          language: language,
+        ),
+        systemInstruction: _guidanceSystem,
+        temperature: 0.3,
+        maxOutputTokens: 200,
+        onDeviceTimeout: ClinicalAIConfig.onDeviceTimeout,
+      );
+      final message = r.text.trim().replaceFirst(
+        RegExp(r'^response\s*:\s*', caseSensitive: false),
+        '',
+      );
+      return AiStep(message, AiTrace.fromResult(ClinicalStep.guidance, r));
+    } catch (e) {
+      debugPrint('⚠️ Model E failed, backend will use the safe template: $e');
+      return const AiStep('', null);
+    }
+  }
+
   static Map<String, dynamic> _normaliseExtraction(Map<String, dynamic> raw) {
     final out = <String, dynamic>{
       for (final f in _extractionStringFields)

@@ -191,6 +191,33 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
       return '${step.trace == null ? '✅ no model call (deterministic rule)' : _traceLine(step.trace)}\n'
           'priority: ${s['priority']} • issue: ${s['suspected_issue']}';
     },
+    'Model E — patient message, English (prefer on-device)': () async {
+      final step = await ClinicalAI.guidance(
+        extraction: const {
+          'chief_complaint': 'headache',
+          'duration': 'since yesterday',
+          'severity': '7/10',
+          'red_flags_present': false,
+        },
+        score: const {'priority': 'MEDIUM'},
+        language: 'english',
+        locationHint: 'Waiting Area A — General Outpatient',
+      );
+      return '${_traceLine(step.trace)}\n${step.value}';
+    },
+    'Model E — patient message, Kinyarwanda (cloud)': () async {
+      final step = await ClinicalAI.guidance(
+        extraction: const {
+          'chief_complaint': 'chest pain',
+          'severity': 'severe',
+          'red_flags_present': true,
+        },
+        score: const {'priority': 'HIGH'},
+        language: 'kinyarwanda',
+        locationHint: 'Emergency Department — present to the desk immediately',
+      );
+      return '${_traceLine(step.trace)}\n${step.value}';
+    },
     'Model B — extraction (prefer on-device)': () async {
       final step = await ClinicalAI.extract(
         initial: 'I have had a bad headache since yesterday and some fever.',
