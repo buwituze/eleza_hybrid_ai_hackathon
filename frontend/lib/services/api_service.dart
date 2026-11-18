@@ -3,10 +3,6 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-// Conditional import for multipart file handling
-import 'api_service_stub.dart'
-    if (dart.library.io) 'api_service_io.dart'
-    as multipart;
 
 class ApiService {
   static SharedPreferences? _prefs;
@@ -1004,108 +1000,6 @@ class ApiService {
     }
   }
 
-  /// Submit initial audio complaint and get first question
-  Future<QuestionResponse> submitInitialAudio({
-    required String sessionId,
-    required String audioFilePath,
-    required String language,
-  }) async {
-    try {
-      debugPrint('POST $baseUrl/kiosk/$sessionId/audio');
-      debugPrint('Audio file path: $audioFilePath');
-
-      var request = http.MultipartRequest(
-        'POST',
-        Uri.parse('$baseUrl/kiosk/$sessionId/audio'),
-      );
-
-      // Use platform-specific multipart file creation
-      request.files.add(
-        await multipart.createMultipartFile('audio', audioFilePath),
-      );
-      request.fields['language'] = language;
-
-      var streamedResponse = await request.send();
-      var response = await http.Response.fromStream(streamedResponse);
-
-      debugPrint('Response status: ${response.statusCode}');
-      debugPrint('Response body: ${response.body}');
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return QuestionResponse.fromJson(data);
-      } else {
-        throw Exception(
-          'Failed to submit audio: ${response.statusCode} - ${response.body}',
-        );
-      }
-    } catch (e) {
-      debugPrint('Error in submitInitialAudio: $e');
-      throw Exception('Error submitting audio: $e');
-    }
-  }
-
-  /// Submit audio answer to a question
-  Future<QuestionResponse> submitAnswer({
-    required String sessionId,
-    required String question,
-    required String audioFilePath,
-  }) async {
-    try {
-      var request = http.MultipartRequest(
-        'POST',
-        Uri.parse('$baseUrl/kiosk/$sessionId/answer'),
-      );
-
-      // Use platform-specific multipart file creation
-      request.files.add(
-        await multipart.createMultipartFile('audio', audioFilePath),
-      );
-      request.fields['question'] = question;
-
-      var streamedResponse = await request.send();
-      var response = await http.Response.fromStream(streamedResponse);
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return QuestionResponse.fromJson(data);
-      } else {
-        throw Exception('Failed to submit answer: ${response.statusCode}');
-      }
-    } catch (e) {
-      throw Exception('Error submitting answer: $e');
-    }
-  }
-
-  /// Finish session and get routing information
-  Future<FinishResponse> finishSession({
-    required String sessionId,
-    String patientName = '',
-    String patientPhone = '',
-  }) async {
-    try {
-      final response = await http.post(
-        Uri.parse('$baseUrl/kiosk/$sessionId/finish'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'patient_name': patientName,
-          'patient_phone': patientPhone,
-        }),
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return FinishResponse.fromJson(data);
-      } else {
-        throw Exception(
-          'Failed to finish session: ${response.statusCode}, body: ${response.body}',
-        );
-      }
-    } catch (e) {
-      throw Exception('Error finishing session: $e');
-    }
-  }
-
   /// Check session status
   Future<StatusResponse> getStatus({required String sessionId}) async {
     try {
@@ -1136,32 +1030,6 @@ class StartSessionResponse {
     return StartSessionResponse(
       sessionId: json['session_id'],
       greeting: json['greeting'],
-    );
-  }
-}
-
-class QuestionResponse {
-  final String sessionId;
-  final String question;
-  final bool coverageComplete;
-  final String patientName;
-  final String patientPhone;
-
-  QuestionResponse({
-    required this.sessionId,
-    required this.question,
-    required this.coverageComplete,
-    this.patientName = '',
-    this.patientPhone = '',
-  });
-
-  factory QuestionResponse.fromJson(Map<String, dynamic> json) {
-    return QuestionResponse(
-      sessionId: json['session_id'],
-      question: json['question'],
-      coverageComplete: json['coverage_complete'],
-      patientName: json['patient_name'] ?? '',
-      patientPhone: json['patient_phone'] ?? '',
     );
   }
 }

@@ -7,7 +7,16 @@ from typing import Optional
 from google import genai
 from .gemini_utils import generate_with_fallback
 
-_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Lazy client: the hybrid kiosk flow runs this model in the browser via
+# Firebase AI Logic, so the backend must start without GEMINI_API_KEY.
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    return _client
 
 PRIORITY_LEVELS = ["HIGH", "MEDIUM", "LOW"]
 
@@ -57,6 +66,16 @@ def _parse(raw: str) -> dict:
             raise ValueError(f"No valid JSON in response. Got: {raw[:500]}")
         d = json.loads(match.group(0))
 
+    return normalize_score(d)
+
+
+def normalize_score(d: dict) -> dict:
+    """
+    Coerce a raw score dict (from Gemini on the server, or from the browser in
+    the hybrid flow) into the canonical shape with allowed values only.
+    """
+    if not isinstance(d, dict):
+        d = {}
     priority = str(d.get("priority", "MEDIUM")).upper()
     if priority not in PRIORITY_LEVELS:
         priority = "MEDIUM"
@@ -68,6 +87,7 @@ def _parse(raw: str) -> dict:
     factors = d.get("risk_factors", [])
     if not isinstance(factors, list):
         factors = [str(factors)] if factors else []
+    factors = [str(f).strip()[:200] for f in factors if str(f).strip()]
 
     try:
         conf = round(max(0.0, min(1.0, float(d.get("confidence", 0.5)))), 2)
@@ -78,26 +98,60 @@ def _parse(raw: str) -> dict:
             "risk_factors": factors[:4], "confidence": conf}
 
 
+_SEVERE_WORDS = ("severe", "extreme", "unbearable", "very severe")
+
+
+def severe_red_flag_score(extraction: dict) -> Optional[dict]:
+    """
+    Deterministic HIGH score for a confirmed severe red flag — no model needed.
+    Returns None if the rule does not apply.
+    """
+    symptom  = str(extraction.get("chief_complaint") or "")
+    severity = str(extraction.get("severity") or "").lower()
+    if extraction.get("red_flags_present") and severity in _SEVERE_WORDS:
+        issue = ("cardiorespiratory-related complaint"
+                 if any(w in symptom.lower() for w in ["chest", "breath", "heart"])
+                 else "general or systemic complaint")
+        associated = [str(s) for s in (extraction.get("associated_symptoms") or [])]
+        return {
+            "priority":        "HIGH",
+            "suspected_issue": issue,
+            "risk_factors":    ([symptom] + associated)[:4],
+            "confidence":      0.95,
+        }
+    return None
+
+
+def apply_safety_rules(score_dict: dict, extraction: dict) -> dict:
+    """
+    Server-side triage guardrails applied to ANY model output (server Gemini or
+    browser/on-device). A model may never down-grade these:
+      - confirmed severe red flag  → deterministic HIGH score
+      - any red flag present       → priority HIGH (per triage rules)
+    """
+    forced = severe_red_flag_score(extraction)
+    if forced:
+        forced["safety_override"] = "severe_red_flag"
+        return forced
+    result = dict(score_dict)
+    if extraction.get("red_flags_present") and result.get("priority") != "HIGH":
+        result["priority"] = "HIGH"
+        result["safety_override"] = "red_flag_present"
+    return result
+
+
 def score(extraction: dict, age: Optional[int] = None) -> dict:
     """
     Score urgency from a Model B extraction dict.
     Returns {"priority", "suspected_issue", "risk_factors", "confidence"}.
     """
     symptom  = extraction.get("chief_complaint", "")
-    severity = extraction.get("severity", "").lower()
     red_flag = extraction.get("red_flags_present")
 
     # Safety override — skip API call for confirmed severe red flags
-    if red_flag and severity in ("severe", "extreme", "unbearable", "very severe"):
-        issue = ("cardiorespiratory-related complaint"
-                 if any(w in symptom.lower() for w in ["chest", "breath", "heart"])
-                 else "general or systemic complaint")
-        return {
-            "priority":        "HIGH",
-            "suspected_issue": issue,
-            "risk_factors":    ([symptom] + extraction.get("associated_symptoms", []))[:4],
-            "confidence":      0.95,
-        }
+    forced = severe_red_flag_score(extraction)
+    if forced:
+        return forced
 
     data = {
         "symptom":             symptom or "unknown",
@@ -130,7 +184,7 @@ Understood. JSON risk score only.
     
     try:
         response = generate_with_fallback(
-            _client,
+            _get_client(),
             contents=full_prompt,
             config={
                 'temperature': 0.0,

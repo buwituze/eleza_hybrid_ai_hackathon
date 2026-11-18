@@ -2,10 +2,13 @@
 routers/kiosk.py — Patient kiosk interface endpoints.
 
 POST /kiosk/start              → start session, get session_id + greeting
-POST /kiosk/{id}/audio         → submit initial audio complaint, get first question
-POST /kiosk/{id}/answer        → submit audio answer, get next question or "done"
-POST /kiosk/{id}/finish        → trigger scoring, get patient message + routing
 GET  /kiosk/{id}/status        → poll current stage
+
+The conversation itself (transcribe → extraction → score → complete) lives in
+routers/kiosk_hybrid.py: Models B–F run in the browser through Firebase AI
+Logic (on-device Gemini Nano with cloud fallback); this backend only runs
+Whisper (Model A), rules, validation, routing and persistence. The previous
+server-side Gemini endpoints (/audio, /answer, /finish) were removed.
 
 Language handling:
     The frontend sends the patient's selected language (or None if they skipped).
@@ -24,16 +27,13 @@ Data persistence:
 
 import os
 import re
-import asyncio
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Body
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
 from session import get_session, create_session, SessionStage, ConversationTurn
-from routing import assign_routing, suggest_unclear_issue_routing
-from models import model_a, model_b, model_c, model_d, model_e, model_f
 from models.model_c_rules import PATIENT_INFO_QUESTIONS
 from database.database import (
     PatientDB, SessionDB, ConversationDB, SymptomDB, PredictionDB,
@@ -69,14 +69,6 @@ class StartRequest(BaseModel):
 class StartResponse(BaseModel):
     session_id: str
     greeting:   str
-
-
-class QuestionResponse(BaseModel):
-    session_id:        str
-    question:          str
-    coverage_complete: bool
-    patient_name:      str = ""
-    patient_phone:     str = ""
 
 
 class FinishRequest(BaseModel):
@@ -308,415 +300,52 @@ def _build_full_transcript(session) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
-
-@router.post("/start", response_model=StartResponse)
-def kiosk_start(body: StartRequest):
+def _apply_extraction(session, extraction: dict) -> None:
     """
-    Start a new patient session.
-    language is the patient's screen selection — optional, used as a hint only.
-    Creates patient record and session record in database.
-    
-    Returns:
-        StartResponse with session_id and greeting
-        
-    Raises:
-        503 if database is not ready
-        500 if database operation fails
+    Store a Model B extraction on the session: normalise patient info, copy
+    patient fields onto the session, and keep previously captured patient
+    info if this extraction dropped it. Used by the server-AI flow and the
+    hybrid flow (extraction computed in the browser).
     """
-    print("\n" + "="*80)
-    print("🚀 NEW SESSION STARTED")
-    print(f"Language selected: {body.language}")
-    print(f"Patient Age: {body.patient_age}")
-    resolved_facility_id = body.facility_id
-    
-    # Normalize language to lowercase for consistency
-    normalized_language = body.language.lower() if body.language else "unknown"
-    
-    try:
-        resolved_facility_id = FacilityDB.resolve_facility_id(body.facility_id)
-        print(f"Facility ID: {body.facility_id} -> using {resolved_facility_id}")
+    extraction = dict(extraction or {})
+    _normalize_extraction_patient_info(extraction)
 
-        # Create or get patient in database
-        patient = PatientDB.create_new_patient(
-            preferred_language=normalized_language if normalized_language != "unknown" else "kinyarwanda",
-            location=body.patient_location
-        )
-        print(f"Patient DB ID: {patient['patient_id']}")
-        
-        # Create session in database
-        db_session = SessionDB.create_session(patient['patient_id'])
-        print(f"Session DB ID: {db_session['session_id']}")
-        
-    except Exception as e:
-        error_msg = f"Database operation failed: {type(e).__name__}: {str(e)}"
-        print(f"❌ {error_msg}")
-        import traceback
-        traceback.print_exc()
-        
-        # Check if it's a connection error
-        if "connection" in str(e).lower() or "pool" in str(e).lower():
-            raise HTTPException(
-                status_code=503,
-                detail="Database not available. Check server startup at /startup/status"
-            )
-        else:
-            raise HTTPException(status_code=500, detail=error_msg)
-    
-    # Create in-memory session (for fast conversation)
-    session = create_session(
-        language    = normalized_language,
-        patient_age = body.patient_age,
-    )
-    # Store DB IDs in memory session for later
-    session.db_session_id = db_session['session_id']
-    session.db_patient_id = patient['patient_id']
-    session.facility_id = resolved_facility_id
-    session.patient_location = (body.patient_location or "").strip()
-    
-    greeting = _greeting(normalized_language)
-    
-    print(f"In-Memory Session ID: {session.id}")
-    print(f"💬 Greeting: '{greeting}'")
-    print("="*80 + "\n")
-    
-    return StartResponse(
-        session_id = session.id,
-        greeting   = greeting,
-    )
+    if extraction.get("patient_name"):
+        session.patient_name = extraction["patient_name"]
+    if extraction.get("patient_age"):
+        age_int = _words_to_age(str(extraction["patient_age"]))
+        if age_int is not None:
+            session.patient_age = age_int
+            extraction["patient_age"] = str(age_int)
+    if extraction.get("patient_gender"):
+        session.patient_gender = extraction["patient_gender"]
+    if extraction.get("patient_phone"):
+        session.patient_phone = extraction["patient_phone"]
+    if extraction.get("patient_location"):
+        session.patient_location = extraction["patient_location"]
+
+    # Preserve previously extracted patient info if this extraction dropped it
+    if not extraction.get("patient_name") and session.patient_name:
+        extraction["patient_name"] = session.patient_name
+    if not extraction.get("patient_age") and session.patient_age:
+        extraction["patient_age"] = str(session.patient_age)
+    if not extraction.get("patient_gender") and session.patient_gender:
+        extraction["patient_gender"] = session.patient_gender
+    if not extraction.get("patient_phone") and session.patient_phone:
+        extraction["patient_phone"] = session.patient_phone
+    if not extraction.get("patient_location") and session.patient_location:
+        extraction["patient_location"] = session.patient_location
+
+    session.extraction = extraction
 
 
-@router.post("/{session_id}/audio", response_model=QuestionResponse)
-async def kiosk_audio(
-    session_id: str,
-    audio: UploadFile = File(...),
-    language: Optional[str] = Form(None),
-):
+def _persist_session(session, body: "FinishRequest", routing, full_transcript: str) -> dict:
     """
-    Receive patient's initial audio complaint, transcribe it, extract clinical
-    info, and return the first follow-up question.
-
-    language (form field): the patient's screen selection, passed as a hint to
-    Model A. Detection always runs regardless of this value.
-    
-    Audio is saved to disk but not yet persisted to database (happens on finish).
+    Persist a finished session (patient info, audio refs, conversation,
+    symptoms, prediction, queue entry + SMS, complete session data).
+    Shared by the server-AI flow (/finish) and the hybrid flow (/complete).
+    Returns the queue entry (or a fallback with the routing queue number).
     """
-    print("\n" + "="*80)
-    print("🎤 INITIAL AUDIO RECEIVED")
-    print(f"Session ID: {session_id}")
-    
-    session = get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found.")
-    if session.stage != SessionStage.AWAITING_AUDIO:
-        raise HTTPException(status_code=409, detail="Audio already submitted for this session.")
-
-    audio_bytes = await audio.read()
-    print(f"Audio size: {len(audio_bytes)} bytes")
-    
-    # Save audio file to disk
-    audio_path = _save_audio_file(session_id, audio_bytes, 0, "patient")
-    session.audio_files = [(0, "patient", audio_path, len(audio_bytes))]
-    print(f"Audio saved to: {audio_path}")
-
-    # Use session language as hint if not passed directly in the form
-    # Normalize language to lowercase for consistency
-    hint = language.lower() if language else (session.language if session.language != "unknown" else None)
-    print(f"Language hint: {hint}")
-
-    print("\n🔄 Running Model A (Speech-to-Text)...")
-    try:
-        a_result = await asyncio.to_thread(model_a.transcribe, audio_bytes, language_hint=hint)
-        print(f"✅ Transcription successful!")
-        print(f"📝 PATIENT SAID: '{a_result['full_text']}'")
-        print(f"   Confidence: {a_result['mean_confidence']:.2%}")
-        print(f"   Language detected: {a_result['dominant_language']}")
-    except KeyboardInterrupt:
-        print("❌ Interrupted by user")
-        raise
-    except Exception as e:
-        print(f"❌ Transcription error: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Transcription error: {type(e).__name__}: {e}")
-
-    session.transcript      = a_result["full_text"]
-    session.transcript_conf = a_result["mean_confidence"]
-    session.language        = a_result["dominant_language"]  # always update from detection result
-
-    print("\n🔄 Running Model B (Clinical Extraction)...")
-    try:
-        session.extraction = await asyncio.to_thread(model_b.extract, session.transcript)
-        _normalize_extraction_patient_info(session.extraction)
-        print(f"✅ Extraction successful!")
-        print(f"   Extracted: {session.extraction}")
-
-        if session.extraction.get("patient_name"):
-            session.patient_name = session.extraction["patient_name"]
-            print(f"   📝 Patient name extracted: {session.patient_name}")
-        if session.extraction.get("patient_age"):
-            age_int = _words_to_age(str(session.extraction["patient_age"]))
-            if age_int is not None:
-                session.patient_age = age_int
-                session.extraction["patient_age"] = str(age_int)
-            print(f"   📝 Patient age extracted: {session.patient_age}")
-        if session.extraction.get("patient_gender"):
-            session.patient_gender = session.extraction["patient_gender"]
-            print(f"   📝 Patient gender extracted: {session.patient_gender}")
-        if session.extraction.get("patient_phone"):
-            session.patient_phone = session.extraction["patient_phone"]
-            print(f"   📝 Patient phone extracted: {session.patient_phone}")
-        if session.extraction.get("patient_location"):
-            session.patient_location = session.extraction["patient_location"]
-            print(f"   📝 Patient location extracted: {session.patient_location}")
-    except Exception as e:
-        print(f"❌ Extraction error: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Extraction error: {type(e).__name__}: {e}")
-
-    print("\n🔄 Running Model C (Question Generation)...")
-    question = model_c.select_next_question(
-        extraction      = session.extraction,
-        questions_asked = session.questions_asked,
-        patient_answers = session.patient_answers,
-    )
-    session.stage = SessionStage.QUESTIONING
-    print(f"✅ Question generated!")
-    print(f"💬 ASSISTANT ASKS: '{question}'")
-    print("="*80 + "\n")
-
-    return QuestionResponse(
-        session_id        = session.id,
-        question          = question,
-        coverage_complete = False,
-        patient_name      = session.patient_name,
-        patient_phone     = session.patient_phone,
-    )
-
-
-@router.post("/{session_id}/answer", response_model=QuestionResponse)
-async def kiosk_answer(
-    session_id: str,
-    question: str = Form(...),
-    audio: UploadFile = File(...),
-):
-    """
-    Submit a patient's audio answer. Transcribes it using the session's
-    detected language, then returns the next question or signals done.
-
-    When coverage_complete is True, call POST /kiosk/{id}/finish next.
-    
-    Audio saved to disk but not persisted to database yet.
-    """
-    print("\n" + "="*80)
-    print("🎤 ANSWER AUDIO RECEIVED")
-    print(f"Session ID: {session_id}")
-    print(f"Previous question: '{question}'")
-    
-    session = get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found.")
-    if session.stage != SessionStage.QUESTIONING:
-        raise HTTPException(status_code=409, detail="Session is not in the questioning stage.")
-
-    audio_bytes = await audio.read()
-    print(f"Audio size: {len(audio_bytes)} bytes")
-    
-    # Save audio file to disk
-    if not hasattr(session, 'audio_files'):
-        session.audio_files = []
-    sequence = len(session.audio_files)
-    audio_path = _save_audio_file(session_id, audio_bytes, sequence, "patient")
-    session.audio_files.append((sequence, "patient", audio_path, len(audio_bytes)))
-    print(f"Audio saved to: {audio_path}")
-
-    # For answers, use the already-detected session language as the hint
-    print(f"\n🔄 Running Model A (Transcribing answer in {session.language})...")
-    try:
-        a_result = await asyncio.to_thread(model_a.transcribe, audio_bytes, language_hint=session.language)
-        answer   = a_result["full_text"]
-        print(f"✅ Transcription successful!")
-        print(f"📝 PATIENT ANSWERED: '{answer}'")
-        print(f"   Confidence: {a_result['mean_confidence']:.2%}")
-    except Exception as e:
-        print(f"❌ Answer transcription failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Answer transcription failed: {e}")
-
-    session.turns.append(ConversationTurn(question=question, answer=answer))
-    _capture_patient_info_from_answer(session, question, answer)
-    print(f"Turn #{len(session.turns)} recorded")
-
-    print("\n🔄 Running Model B (Updating extraction)...")
-    try:
-        conversation_history = [
-            {"question": t.question, "answer": t.answer}
-            for t in session.turns
-        ]
-        target_language = session.language if session.language in {"kinyarwanda", "english"} else "kinyarwanda"
-        session.extraction = await asyncio.to_thread(
-            model_b.extract_full,
-            session.transcript,
-            conversation_history=conversation_history,
-            target_language=target_language,
-        )
-        _normalize_extraction_patient_info(session.extraction)
-        print(f"✅ Extraction updated: {session.extraction}")
-
-        if session.extraction.get("patient_name"):
-            session.patient_name = session.extraction["patient_name"]
-            print(f"   📝 Patient name extracted: {session.patient_name}")
-        if session.extraction.get("patient_age"):
-            age_int = _words_to_age(str(session.extraction["patient_age"]))
-            if age_int is not None:
-                session.patient_age = age_int
-                session.extraction["patient_age"] = str(age_int)
-            print(f"   📝 Patient age extracted: {session.patient_age}")
-        if session.extraction.get("patient_gender"):
-            session.patient_gender = session.extraction["patient_gender"]
-            print(f"   📝 Patient gender extracted: {session.patient_gender}")
-        if session.extraction.get("patient_phone"):
-            session.patient_phone = session.extraction["patient_phone"]
-            print(f"   📝 Patient phone extracted: {session.patient_phone}")
-        if session.extraction.get("patient_location"):
-            session.patient_location = session.extraction["patient_location"]
-            print(f"   📝 Patient location extracted: {session.patient_location}")
-
-        # Preserve previously extracted patient info if Model B dropped it on re-extraction
-        if not session.extraction.get("patient_name") and session.patient_name:
-            session.extraction["patient_name"] = session.patient_name
-        if not session.extraction.get("patient_age") and session.patient_age:
-            session.extraction["patient_age"] = str(session.patient_age)
-        if not session.extraction.get("patient_gender") and session.patient_gender:
-            session.extraction["patient_gender"] = session.patient_gender
-        if not session.extraction.get("patient_phone") and session.patient_phone:
-            session.extraction["patient_phone"] = session.patient_phone
-        if not session.extraction.get("patient_location") and session.patient_location:
-            session.extraction["patient_location"] = session.patient_location
-    except Exception as e:
-        print(f"⚠️ Extraction update failed (continuing): {e}")
-
-    print("\n🔄 Running Model C (Checking coverage)...")
-    if model_c.is_coverage_complete(session.extraction, len(session.turns), MAX_TURNS):
-        session.stage = SessionStage.SCORING
-        print(f"✅ Coverage complete! ({len(session.turns)} turns completed)")
-        print("="*80 + "\n")
-        return QuestionResponse(
-            session_id=session.id,
-            question="",
-            coverage_complete=True,
-            patient_name=session.patient_name,
-            patient_phone=session.patient_phone,
-        )
-
-    print(f"📊 Coverage not yet complete ({len(session.turns)}/{MAX_TURNS} turns)")
-    next_q = model_c.select_next_question(
-        extraction      = session.extraction,
-        questions_asked = session.questions_asked,
-        patient_answers = session.patient_answers,
-    )
-    print(f"✅ Next question generated!")
-    print(f"💬 ASSISTANT ASKS: '{next_q}'")
-    print("="*80 + "\n")
-    return QuestionResponse(
-        session_id=session.id,
-        question=next_q,
-        coverage_complete=False,
-        patient_name=session.patient_name,
-        patient_phone=session.patient_phone,
-    )
-
-
-@router.post("/{session_id}/finish", response_model=FinishResponse)
-async def kiosk_finish(
-    session_id: str,
-    body: Optional[FinishRequest] = Body(default=None),
-):
-    """
-    Finalise the session. Runs Models D, E, F and returns
-    the patient message and routing decision.
-    
-    Persists all session data to database:
-    - Audio file references
-    - Conversation messages
-    - Extracted symptoms
-    - Risk prediction
-    - Complete session data
-    - Creates queue entry
-    """
-    print("\n" + "="*80)
-    print("🏁 FINISHING SESSION")
-    print(f"Session ID: {session_id}")
-    
-    session = get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found.")
-    if session.stage != SessionStage.SCORING:
-        raise HTTPException(status_code=409, detail="Session is not ready to finish.")
-    body = body or FinishRequest()
-    full_transcript = _build_full_transcript(session)
-
-    print("\n🔄 Running Model D (Risk Scoring)...")
-    session.score = await asyncio.to_thread(model_d.score, session.extraction, age=session.patient_age)
-    print(f"✅ Score: {session.score}")
-
-    routing_override_department = None
-    suspected_issue = str(session.score.get("suspected_issue", "")).strip().lower()
-    if session.score.get("priority") != "HIGH" and suspected_issue == "unclear or unclassifiable complaint":
-        print("\n🔄 Running unclear-issue routing fallback...")
-        fallback = await asyncio.to_thread(
-            suggest_unclear_issue_routing,
-            extraction=session.extraction,
-            questions_asked=session.questions_asked,
-            patient_answers=session.patient_answers,
-            language=session.language,
-        )
-        if fallback:
-            routing_override_department = fallback.get("department")
-            session.score["suspected_issue"] = fallback.get("suspected_issue", session.score["suspected_issue"])
-            session.score["routing_fallback"] = fallback
-            print(f"✅ Fallback selected: issue={session.score['suspected_issue']}, department={routing_override_department}")
-        else:
-            print("ℹ️ Fallback unavailable; using default routing")
-
-    print("\n🔄 Assigning routing...")
-    routing = assign_routing(
-        priority        = session.score["priority"],
-        suspected_issue = session.score["suspected_issue"],
-        department_override=routing_override_department,
-    )
-    print(f"✅ Routing: {routing.department}, Queue: {routing.queue}")
-
-    print("\n🔄 Running Model E (Patient Message)...")
-    session.patient_message = await asyncio.to_thread(
-        model_e.generate_message,
-        extraction     = session.extraction,
-        score          = session.score,
-        language       = session.language,
-        location       = routing.location_hint,
-        low_confidence = session.score.get("confidence", 1.0) < 0.4,
-    )
-    print(f"✅ Patient message generated")
-
-    print("\n🔄 Running Model F (Doctor Brief)...")
-    session.doctor_brief = await asyncio.to_thread(
-        model_f.generate_brief,
-        session_id      = session.id,
-        extraction      = session.extraction,
-        score           = session.score,
-        questions_asked = session.questions_asked,
-        patient_answers = session.patient_answers,
-        transcript      = full_transcript,
-        language        = session.language,
-        patient_age     = session.patient_age,
-    )
-    print(f"✅ Doctor brief generated")
-    
-    session.location = routing.location_hint
-    session.stage    = SessionStage.COMPLETE
-
     # ========================================================================
     # PERSIST TO DATABASE
     # ========================================================================
@@ -893,16 +522,86 @@ async def kiosk_finish(
         import traceback
         traceback.print_exc()
     
-    print("="*80 + "\n")
+    return queue_entry
 
-    return FinishResponse(
-        session_id      = session.id,
-        patient_message = session.patient_message,
-        department      = routing.department,
-        queue           = routing.queue,
-        queue_number    = queue_entry.get('queue_number', 0),
-        location_hint   = routing.location_hint,
-        urgency_label   = routing.urgency_label,
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("/start", response_model=StartResponse)
+def kiosk_start(body: StartRequest):
+    """
+    Start a new patient session.
+    language is the patient's screen selection — optional, used as a hint only.
+    Creates patient record and session record in database.
+    
+    Returns:
+        StartResponse with session_id and greeting
+        
+    Raises:
+        503 if database is not ready
+        500 if database operation fails
+    """
+    print("\n" + "="*80)
+    print("🚀 NEW SESSION STARTED")
+    print(f"Language selected: {body.language}")
+    print(f"Patient Age: {body.patient_age}")
+    resolved_facility_id = body.facility_id
+    
+    # Normalize language to lowercase for consistency
+    normalized_language = body.language.lower() if body.language else "unknown"
+    
+    try:
+        resolved_facility_id = FacilityDB.resolve_facility_id(body.facility_id)
+        print(f"Facility ID: {body.facility_id} -> using {resolved_facility_id}")
+
+        # Create or get patient in database
+        patient = PatientDB.create_new_patient(
+            preferred_language=normalized_language if normalized_language != "unknown" else "kinyarwanda",
+            location=body.patient_location
+        )
+        print(f"Patient DB ID: {patient['patient_id']}")
+        
+        # Create session in database
+        db_session = SessionDB.create_session(patient['patient_id'])
+        print(f"Session DB ID: {db_session['session_id']}")
+        
+    except Exception as e:
+        error_msg = f"Database operation failed: {type(e).__name__}: {str(e)}"
+        print(f"❌ {error_msg}")
+        import traceback
+        traceback.print_exc()
+        
+        # Check if it's a connection error
+        if "connection" in str(e).lower() or "pool" in str(e).lower():
+            raise HTTPException(
+                status_code=503,
+                detail="Database not available. Check server startup at /startup/status"
+            )
+        else:
+            raise HTTPException(status_code=500, detail=error_msg)
+    
+    # Create in-memory session (for fast conversation)
+    session = create_session(
+        language    = normalized_language,
+        patient_age = body.patient_age,
+    )
+    # Store DB IDs in memory session for later
+    session.db_session_id = db_session['session_id']
+    session.db_patient_id = patient['patient_id']
+    session.facility_id = resolved_facility_id
+    session.patient_location = (body.patient_location or "").strip()
+    
+    greeting = _greeting(normalized_language)
+    
+    print(f"In-Memory Session ID: {session.id}")
+    print(f"💬 Greeting: '{greeting}'")
+    print("="*80 + "\n")
+    
+    return StartResponse(
+        session_id = session.id,
+        greeting   = greeting,
     )
 
 

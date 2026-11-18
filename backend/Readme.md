@@ -145,9 +145,11 @@ psql -U postgres pre_consultation_db < backup.sql
 
 - **/kiosk/**
   - `POST /kiosk/start`: Start a new session, get session ID and greeting.
-  - `POST /kiosk/{id}/audio`: Submit initial audio complaint, get first question.
-  - `POST /kiosk/{id}/answer`: Submit audio answer, get next question or finish.
-  - `POST /kiosk/{id}/finish`: Trigger scoring, get patient message and routing.
+  - `POST /kiosk/{id}/transcribe`: Whisper (Model A) for the complaint or an answer.
+  - `POST /kiosk/{id}/extraction`: Validate the browser's Model B extraction; returns the next rule question or the Model C prompt context.
+  - `POST /kiosk/{id}/score`: Validate the browser's Model D score, apply red-flag safety rules, assign routing.
+  - `POST /kiosk/{id}/complete`: Vet the Model E message, assemble the Model F brief, persist, queue, SMS.
+  - (Models B–F run in the browser via Firebase AI Logic — see routers/kiosk_hybrid.py.)
   - `GET /kiosk/{id}/status`: Poll current session stage.
 
 - **/dialogue/**

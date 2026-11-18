@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 
 from models import model_a
 from routers import sessions, transcription, dialogue, triage, kiosk, doctor
-from routers import auth, facilities, rooms, queue, patients, doctors, tts
+from routers import auth, facilities, rooms, queue, patients, doctors, tts, kiosk_hybrid
 from database.database import DatabaseConnection
 
 
@@ -115,6 +115,7 @@ app.include_router(triage.router)
 
 # Interface-facing — kiosk and clinician dashboard
 app.include_router(kiosk.router)
+app.include_router(kiosk_hybrid.router)  # AI runs in the browser (Firebase AI Logic)
 app.include_router(doctor.router)
 app.include_router(tts.router)
 

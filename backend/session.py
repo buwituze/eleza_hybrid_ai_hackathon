@@ -70,6 +70,12 @@ class Session:
     # Model F output
     doctor_brief:    dict                   = field(default_factory=dict)
 
+    # Hybrid flow (AI runs in the browser via Firebase AI Logic)
+    routing:         Optional[object]       = None        # RoutingDecision, set by /score
+    # One entry per AI step: {"step", "source": on_device|in_cloud, "mode",
+    # "fallback_reason", "latency_ms", "model"} — feeds the On-device/Cloud badges.
+    ai_trace:        list[dict]             = field(default_factory=list)
+
     @property
     def questions_asked(self) -> list[str]:
         return [t.question for t in self.turns]

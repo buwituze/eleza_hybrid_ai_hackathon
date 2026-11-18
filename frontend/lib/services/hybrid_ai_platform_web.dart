@@ -2,11 +2,18 @@
 import 'dart:js_interop';
 
 class RawHybridResult {
-  const RawHybridResult(this.text, this.source, this.mode, this.latencyMs);
+  const RawHybridResult(
+    this.text,
+    this.source,
+    this.mode,
+    this.latencyMs,
+    this.fallbackReason,
+  );
   final String text;
   final String source;
   final String mode;
   final int latencyMs;
+  final String? fallbackReason;
 }
 
 const bool isSupported = true;
@@ -18,6 +25,7 @@ extension type _ElezaAI._(JSObject _) implements JSObject {
   external JSPromise<JSString> onDeviceAvailability();
   external JSPromise<JSString> prepareOnDevice(JSFunction? onProgress);
   external JSPromise<_GenerateResult> generate(JSAny request);
+  external void resetDeviceHealth();
 }
 
 extension type _GenerateResult._(JSObject _) implements JSObject {
@@ -25,6 +33,7 @@ extension type _GenerateResult._(JSObject _) implements JSObject {
   external JSString get source;
   external JSString get mode;
   external JSNumber get latencyMs;
+  external JSString? get fallbackReason;
 }
 
 /// eleza_ai.js is an ES module that imports the Firebase SDK from gstatic, so
@@ -52,7 +61,13 @@ Future<RawHybridResult> generate(Map<String, dynamic> request) async {
     result.source.toDart,
     result.mode.toDart,
     result.latencyMs.toDartInt,
+    result.fallbackReason?.toDart,
   );
+}
+
+Future<void> resetDeviceHealth() async {
+  final bridge = await _ready();
+  bridge.resetDeviceHealth();
 }
 
 Future<String> onDeviceAvailability() async {

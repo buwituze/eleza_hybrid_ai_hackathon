@@ -96,10 +96,13 @@ Patient speaks into kiosk
 
 **Kiosk (Patient) Flow:**
 
+AI steps (translation, Models B–F) run in the browser through Firebase AI Logic hybrid inference; the backend transcribes, validates, routes and persists.
+
 1. `POST /kiosk/start` — start session, get greeting
-2. `POST /kiosk/{id}/audio` — submit initial voice complaint, get first question
-3. `POST /kiosk/{id}/answer` — submit audio answer, get next question (repeats until enough info or max turns)
-4. `POST /kiosk/{id}/finish` — trigger scoring, get patient guidance message and routing
+2. `POST /kiosk/{id}/transcribe` — Whisper transcription of the complaint / an answer
+3. `POST /kiosk/{id}/extraction` — store the browser's extraction, get the next question (rules) or the context to generate one (repeats until enough info or max turns)
+4. `POST /kiosk/{id}/score` — validate the triage score, apply safety rules, get routing
+5. `POST /kiosk/{id}/complete` — store patient message + doctor brief, queue the patient, send SMS
 
 **Doctor Flow:**
 

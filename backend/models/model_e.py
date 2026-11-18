@@ -3,11 +3,21 @@ models/model_e.py — Patient-facing guidance message generator.
 """
 
 import os
+import re
 from typing import Optional
 from google import genai
 from .gemini_utils import generate_with_fallback
 
-_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Lazy client: the hybrid kiosk flow runs this model in the browser via
+# Firebase AI Logic, so the backend must start without GEMINI_API_KEY.
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    return _client
 
 _FALLBACK = {
     "english": {
@@ -27,9 +37,23 @@ _FALLBACK = {
 _FORBIDDEN = [
     "you have", "you may have", "this is", "this could be", "diagnosis",
     "heart attack", "stroke", "cancer", "infection",
-    "take", "medication", "rest", "drink water", "avoid",
+    "medication", "rest", "drink water", "avoid",
     "life-threatening", "critical",
 ]
+# Matched as whole words/phrases (plain substring matching rejected safe text,
+# e.g. "rest" in "interest"). "take" alone used to reject "please take a seat"
+# — the model's own example — so it is only forbidden with a medicine word.
+_FORBIDDEN_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(p) for p in _FORBIDDEN) + r")\b"
+    r"|\btake\s+(?:\w+\s+)?(?:medicines?|medications?|pills?|tablets?|"
+    r"painkillers?|paracetamol|aspirin|antibiotics?|drugs?)\b",
+    re.IGNORECASE,
+)
+
+
+def contains_forbidden(text: str) -> bool:
+    """True if a patient message contains diagnosis/advice language."""
+    return bool(_FORBIDDEN_RE.search(text or ""))
 
 _SYSTEM = """You are a healthcare system assistant in a hospital.
 Explain the next steps to a patient using only the system's decision.
@@ -101,7 +125,7 @@ Now generate for:
 {prompt}"""
         
         response = generate_with_fallback(
-            _client,
+            _get_client(),
             contents=full_prompt,
             config={
                 'temperature': 0.3,
@@ -114,11 +138,33 @@ Now generate for:
         return templates.get(priority, templates["UNKNOWN"])
 
     # Safety check — fall back if forbidden content detected
-    lowered = message.lower()
-    if any(phrase in lowered for phrase in _FORBIDDEN):
+    if contains_forbidden(message):
         return templates.get(priority, templates["UNKNOWN"])
 
     return message
+
+
+def fallback_message(language: str, priority: str) -> str:
+    """Safe template message for a priority (no model)."""
+    templates = _FALLBACK.get(language, _FALLBACK["english"])
+    return templates.get(str(priority).upper(), templates["UNKNOWN"])
+
+
+def vet_message(message: str, language: str, priority: str,
+                low_confidence: bool = False) -> tuple[str, bool]:
+    """
+    Apply the same guardrails as generate_message() to a message produced
+    elsewhere (e.g. in the browser via Firebase AI Logic).
+    Returns (message_to_use, used_fallback).
+    """
+    text = (message or "").strip()
+    if (low_confidence or str(priority).upper() not in ("HIGH", "MEDIUM", "LOW")
+            or not text or len(text) > 1000
+            or contains_forbidden(text)):
+        if low_confidence:
+            return _FALLBACK.get(language, _FALLBACK["english"])["UNKNOWN"], True
+        return fallback_message(language, priority), True
+    return text, False
 
 # Wrapper for notebook compatibility
 def generate_guidance(extraction: dict, score: dict, language: str = "english", location: str = "") -> dict:

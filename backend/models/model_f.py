@@ -7,7 +7,16 @@ from typing import Optional
 from google import genai
 from .gemini_utils import generate_with_fallback
 
-_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Lazy client: the hybrid kiosk flow runs this model in the browser via
+# Firebase AI Logic, so the backend must start without GEMINI_API_KEY.
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    return _client
 
 _SYSTEM = """You are a clinical documentation assistant. Write a patient brief for a doctor.
 Rules:
@@ -86,7 +95,7 @@ Understood. JSON brief only, no diagnosis.
 
     try:
         response = generate_with_fallback(
-            _client,
+            _get_client(),
             contents=full_prompt,
             config={
                 'temperature': 0.1,
@@ -97,11 +106,44 @@ Understood. JSON brief only, no diagnosis.
         )
         gemini_out = _parse(response.text)
     except Exception:
-        gemini_out = {
-            "narrative_summary": f"Patient reported {extraction.get('chief_complaint') or 'unspecified complaint'}. Duration: {extraction.get('duration') or 'unknown'}. Severity: {extraction.get('severity') or 'unknown'}.",
-            "key_findings":      score.get("risk_factors") or [extraction.get("chief_complaint", "")],
-            "red_flag_note":     "Red flag confirmed by system." if extraction.get("red_flags_present") else "",
-        }
+        gemini_out = None
+
+    return build_brief(session_id, extraction, score, questions_asked, patient_answers,
+                       transcript, language, patient_age, gemini_out)
+
+
+def _fallback_ai_fields(extraction: dict, score: dict) -> dict:
+    return {
+        "narrative_summary": f"Patient reported {extraction.get('chief_complaint') or 'unspecified complaint'}. Duration: {extraction.get('duration') or 'unknown'}. Severity: {extraction.get('severity') or 'unknown'}.",
+        "key_findings":      score.get("risk_factors") or [extraction.get("chief_complaint", "")],
+        "red_flag_note":     "Red flag confirmed by system." if extraction.get("red_flags_present") else "",
+    }
+
+
+def build_brief(session_id: str, extraction: dict, score: dict,
+                questions_asked: list[str], patient_answers: list[str],
+                transcript: str = "", language: str = "english",
+                patient_age: Optional[int] = None,
+                ai_fields: Optional[dict] = None) -> dict:
+    """
+    Assemble the doctor brief. [ai_fields] holds the model-written parts
+    (narrative_summary, key_findings, red_flag_note) — from Gemini on the
+    server or from the browser via Firebase AI Logic. Missing/invalid parts
+    fall back to a factual template.
+    """
+    fallback = _fallback_ai_fields(extraction, score)
+    ai_fields = ai_fields if isinstance(ai_fields, dict) else {}
+
+    narrative = str(ai_fields.get("narrative_summary") or "").strip()[:2000] or fallback["narrative_summary"]
+    findings = ai_fields.get("key_findings")
+    if not isinstance(findings, list) or not findings:
+        findings = fallback["key_findings"]
+    findings = [str(f).strip()[:300] for f in findings if str(f).strip()][:10]
+    red_flag_note = ai_fields.get("red_flag_note")
+    red_flag_note = str(red_flag_note).strip()[:500] if red_flag_note is not None else fallback["red_flag_note"]
+    if extraction.get("red_flags_present") and not red_flag_note:
+        red_flag_note = fallback["red_flag_note"]
+    gemini_out = {"narrative_summary": narrative, "key_findings": findings, "red_flag_note": red_flag_note}
 
     return {
         "session_id":          session_id,
