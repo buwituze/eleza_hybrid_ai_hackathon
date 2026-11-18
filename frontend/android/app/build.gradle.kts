@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -21,7 +23,9 @@ android {
 
     // Load signing credentials from key.properties (written by Codemagic CI)
     val keyPropertiesFile = rootProject.file("key.properties")
-    val keyProperties = java.util.Properties()
+    // `java` inside android {} is the Android `java` extension, not the
+    // java.util package — hence the import at the top of this file.
+    val keyProperties = Properties()
     if (keyPropertiesFile.exists()) {
         keyProperties.load(keyPropertiesFile.inputStream())
     }
