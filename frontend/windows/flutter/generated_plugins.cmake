@@ -6,6 +6,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   audioplayers_windows
   firebase_app_check
   firebase_core
+  firebase_remote_config
   permission_handler_windows
   record_windows
 )

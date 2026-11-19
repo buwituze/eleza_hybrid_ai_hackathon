@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../services/app_config.dart';
 import '../services/clinical_ai.dart';
+import '../services/clinical_prompts.dart';
 import '../services/hybrid_ai_service.dart';
 
 /// Debug-only page (route: /ai-smoke-test) that proves Firebase AI Logic
@@ -351,6 +353,29 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.tune),
+              title: Text(
+                'Remote Config: ${AppConfig.getString(AppConfig.kConfigVersion)}'
+                ' (${AppConfig.sourceOf(AppConfig.kConfigVersion)})',
+              ),
+              subtitle: SelectableText(
+                [
+                  AppConfig.lastFetchStatus,
+                  for (final step in ClinicalStep.values)
+                    '${step.wire}: ${ClinicalAIConfig.configuredMode(step).wire}',
+                  'on-device timeout: '
+                      '${ClinicalAIConfig.onDeviceTimeout.inMilliseconds} ms '
+                      '(${AppConfig.sourceOf(AppConfig.kOnDeviceTimeoutMs)})',
+                  'slow-device cool-down: '
+                      '${ClinicalAIConfig.slowDeviceCooldown.inSeconds} s',
+                  'prompts from console: '
+                      '${ClinicalPrompts.fromConsole.isEmpty ? 'none (in-app defaults)' : ClinicalPrompts.fromConsole.join(', ')}',
+                ].join('\n'),
+              ),
+            ),
+          ),
           Card(
             child: ListTile(
               title: Text('On-device model: ${_status?.name ?? 'checking…'}'),

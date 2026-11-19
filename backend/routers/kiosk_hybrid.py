@@ -37,8 +37,8 @@ from session import ConversationTurn, SessionStage, get_session
 from routing import assign_routing
 from routing.queue_routing import _sanitize_department
 from models import model_a, model_b, model_c, model_d, model_e, model_f
+import server_config
 from routers.kiosk import (
-    MAX_TURNS,
     FinishRequest,
     FinishResponse,
     _apply_extraction,
@@ -314,7 +314,8 @@ async def kiosk_extraction(session_id: str, body: ExtractionRequest):
     _apply_extraction(session, extraction)
     _record_traces(session, body.ai)
 
-    if session.turns and model_c.is_coverage_complete(session.extraction, len(session.turns), MAX_TURNS):
+    if session.turns and model_c.is_coverage_complete(
+            session.extraction, len(session.turns), server_config.max_turns()):
         session.stage = SessionStage.SCORING
         return ExtractionResponse(
             session_id=session.id,
@@ -358,7 +359,9 @@ async def kiosk_score(session_id: str, body: ScoreRequest):
     _require_stage(session, SessionStage.SCORING)
 
     score = model_d.normalize_score(body.score)
-    score = model_d.apply_safety_rules(score, session.extraction)
+    score = model_d.apply_safety_rules(
+        score, session.extraction, high_severity_min=server_config.high_severity_min()
+    )
 
     department_override = None
     suggestion = body.routing_suggestion or {}
@@ -394,7 +397,7 @@ async def kiosk_score(session_id: str, body: ScoreRequest):
             "location_hint": routing.location_hint,
             "urgency_label": routing.urgency_label,
         },
-        low_confidence=score.get("confidence", 1.0) < 0.4,
+        low_confidence=score.get("confidence", 1.0) < server_config.low_confidence_threshold(),
         brief_context={
             "session_id": session.id,
             "extraction": session.extraction,
@@ -420,7 +423,7 @@ async def kiosk_complete(session_id: str, body: CompleteRequest):
 
     routing = session.routing
     language = _session_language(session)
-    low_confidence = session.score.get("confidence", 1.0) < 0.4
+    low_confidence = session.score.get("confidence", 1.0) < server_config.low_confidence_threshold()
     _record_traces(session, body.ai)
 
     message, used_template = model_e.vet_message(

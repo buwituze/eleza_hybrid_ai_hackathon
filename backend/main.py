@@ -20,6 +20,7 @@ from models import model_a
 from routers import sessions, transcription, dialogue, triage, kiosk, doctor
 from routers import auth, facilities, rooms, queue, patients, doctors, tts, kiosk_hybrid
 from database.database import DatabaseConnection
+import server_config
 
 
 # Global state to track initialization
@@ -76,8 +77,17 @@ async def lifespan(app: FastAPI):
             model_a._loading_status = f"error: {str(e)}"
     
     asyncio.create_task(load_models_with_timeout())
-    
+
+    # Triage thresholds from Firebase Remote Config (server template).
+    # Falls back to in-app defaults without credentials; refreshes in background.
+    await server_config.load()
+    refresh_task = asyncio.create_task(server_config.refresh_forever(
+        int(os.getenv("REMOTE_CONFIG_REFRESH_SECONDS", "300"))
+    ))
+
     yield
+
+    refresh_task.cancel()
     
     # Cleanup on shutdown
     print("🔌 Closing database connection pool...")
@@ -151,6 +161,7 @@ def startup_status():
         "database_ready": _startup_info["database_ready"],
         "models_ready": _startup_info["models_ready"],
         "startup_errors": _startup_info["startup_errors"],
+        "remote_config": server_config.snapshot(),
         "message": (
             "✅ All systems ready"
             if (_startup_info["database_ready"] and _startup_info["models_ready"])
