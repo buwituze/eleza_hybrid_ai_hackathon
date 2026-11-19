@@ -122,12 +122,23 @@ def severe_red_flag_score(extraction: dict) -> Optional[dict]:
     return None
 
 
-def apply_safety_rules(score_dict: dict, extraction: dict) -> dict:
+def severity_number(extraction: dict) -> Optional[int]:
+    """Patient-reported severity as 0-10 ("8", "8/10", "8 out of 10"), else None."""
+    m = re.match(r"\s*(\d{1,2})(?:\s*(?:/|out of)\s*10)?\b", str(extraction.get("severity") or ""))
+    if not m:
+        return None
+    value = int(m.group(1))
+    return value if 0 <= value <= 10 else None
+
+
+def apply_safety_rules(score_dict: dict, extraction: dict,
+                       high_severity_min: Optional[int] = None) -> dict:
     """
     Server-side triage guardrails applied to ANY model output (server Gemini or
     browser/on-device). A model may never down-grade these:
-      - confirmed severe red flag  → deterministic HIGH score
-      - any red flag present       → priority HIGH (per triage rules)
+      - confirmed severe red flag              → deterministic HIGH score
+      - any red flag present                   → priority HIGH (per triage rules)
+      - severity >= high_severity_min (0-10)   → priority HIGH (Remote Config threshold)
     """
     forced = severe_red_flag_score(extraction)
     if forced:
@@ -137,6 +148,12 @@ def apply_safety_rules(score_dict: dict, extraction: dict) -> dict:
     if extraction.get("red_flags_present") and result.get("priority") != "HIGH":
         result["priority"] = "HIGH"
         result["safety_override"] = "red_flag_present"
+        return result
+    severity = severity_number(extraction)
+    if (high_severity_min is not None and severity is not None
+            and severity >= high_severity_min and result.get("priority") != "HIGH"):
+        result["priority"] = "HIGH"
+        result["safety_override"] = f"severity_{severity}_of_10"
     return result
 
 

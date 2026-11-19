@@ -766,7 +766,7 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
   Widget _structuredInfoCard() {
     final sessionStart = _parseDateTime(_selectedSessionDetail?.startTime);
     final chiefComplaint =
-        (_patientBrief?.chiefComplaint?.isNotEmpty == true
+        (_patientBrief?.chiefComplaint.isNotEmpty == true
                 ? _patientBrief!.chiefComplaint
                 : _selectedSessionDetail?.extractionData?['chief_complaint']
                         ?.toString() ??
@@ -842,11 +842,16 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
           if (_patientBrief?.safetyOverride != null) ...[
             const SizedBox(height: 10),
             _sectionTitle('Triage Safety Rule'),
-            _bulletText(
-              _patientBrief!.safetyOverride == 'severe_red_flag'
-                  ? 'Priority set to HIGH by rule: confirmed severe red flag.'
-                  : 'Priority raised to HIGH by rule: red flag present.',
-            ),
+            _bulletText(switch (_patientBrief!.safetyOverride!) {
+              'severe_red_flag' =>
+                'Priority set to HIGH by rule: confirmed severe red flag.',
+              'red_flag_present' =>
+                'Priority raised to HIGH by rule: red flag present.',
+              final s when s.startsWith('severity_') =>
+                'Priority raised to HIGH by rule: patient-reported severity '
+                    '${s.replaceAll('severity_', '').replaceAll('_of_', '/')}.',
+              final s => 'Priority raised to HIGH by rule: $s.',
+            }),
           ],
           if (_patientBrief?.aiTrace.isNotEmpty == true) ...[
             const SizedBox(height: 10),
