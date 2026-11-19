@@ -130,6 +130,45 @@ class PatientDB:
                 return dict(cur.fetchone())
 
     @staticmethod
+    def assign_identity(patient_id: int, session_id: int, full_name: str,
+                        phone_number: str, location: Optional[str],
+                        phone_is_real: bool) -> int:
+        """
+        Give the placeholder patient created at session start its real name and
+        phone. (phone_number, full_name) is unique, so:
+          - real phone + same name as an earlier patient → returning patient:
+            move this session to that patient and drop the placeholder;
+          - no real phone and the name is taken → keep them separate by adding
+            the session number to the name (never merge without a phone).
+        Returns the patient_id the session now belongs to.
+        """
+        with DatabaseConnection.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT patient_id FROM patient WHERE phone_number = %s AND full_name = %s "
+                    "AND patient_id <> %s",
+                    (phone_number, full_name, patient_id),
+                )
+                existing = cur.fetchone()
+                if existing and phone_is_real:
+                    existing_id = existing["patient_id"]
+                    cur.execute("UPDATE session SET patient_id = %s WHERE session_id = %s",
+                                (existing_id, session_id))
+                    cur.execute("DELETE FROM patient WHERE patient_id = %s", (patient_id,))
+                    if location:
+                        cur.execute("UPDATE patient SET location = %s WHERE patient_id = %s",
+                                    (location, existing_id))
+                    return existing_id
+                if existing:
+                    full_name = f"{full_name} #{session_id}"[:255]
+                cur.execute(
+                    "UPDATE patient SET full_name = %s, phone_number = %s, location = %s "
+                    "WHERE patient_id = %s",
+                    (full_name, phone_number, location, patient_id),
+                )
+                return patient_id
+
+    @staticmethod
     def get_patient_by_phone(phone_number: str) -> Optional[Dict]:
         query = "SELECT * FROM patient WHERE phone_number = %s ORDER BY created_at DESC LIMIT 1"
         return DatabaseConnection.execute_query(query, (phone_number,), fetch_one=True)
@@ -750,7 +789,17 @@ class ExtendedSessionDB:
     
     @staticmethod
     def get_patient_sessions(patient_id: int) -> List[Dict]:
-        query = "SELECT * FROM v_patient_list WHERE patient_id = %s ORDER BY start_time DESC"
+        # Columns match routers/patients.py → SessionSummary.
+        query = """
+            SELECT s.session_id, s.start_time,
+                   pred.predicted_condition, pred.risk_level::text AS risk_level,
+                   EXISTS (SELECT 1 FROM prescription pr
+                           WHERE pr.session_id = s.session_id) AS prescribed
+            FROM session s
+            LEFT JOIN prediction pred ON pred.session_id = s.session_id
+            WHERE s.patient_id = %s
+            ORDER BY s.start_time DESC
+        """
         return DatabaseConnection.execute_query(query, (patient_id,))
     
     @staticmethod

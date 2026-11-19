@@ -367,13 +367,20 @@ def _persist_session(session, body: "FinishRequest", routing, full_transcript: s
         session.patient_phone = phone_number
         if location_value:
             session.patient_location = location_value
-        PatientDB.update_patient(
+        phone_is_real = sum(c.isdigit() for c in phone_number) >= 6
+        patient_id = PatientDB.assign_identity(
             patient_id=session.db_patient_id,
+            session_id=session.db_session_id,
             full_name=full_name,
             phone_number=phone_number,
             location=location_value,
+            phone_is_real=phone_is_real,
         )
-        print(f"✅ Updated patient info")
+        if patient_id != session.db_patient_id:
+            print(f"✅ Returning patient — session linked to patient #{patient_id}")
+            session.db_patient_id = patient_id
+        else:
+            print(f"✅ Updated patient info")
 
         # 1. Save audio file references
         if hasattr(session, 'audio_files'):
