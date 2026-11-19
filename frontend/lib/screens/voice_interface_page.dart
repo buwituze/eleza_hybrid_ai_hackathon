@@ -5,6 +5,8 @@ import '../services/api_service.dart';
 import '../services/audio_service.dart';
 import '../services/hybrid_ai_service.dart';
 import '../services/hybrid_kiosk_flow.dart';
+import '../services/clinical_ai.dart' show AiTrace;
+import '../components/ai_badges.dart';
 import '../services/tts_service.dart';
 
 enum SessionState {
@@ -24,8 +26,9 @@ class VoiceInterfacePage extends StatefulWidget {
 class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
   // Session state
   String? _sessionId;
-  HybridKioskSession?
-  _hybrid; // AI steps run in the browser (Firebase AI Logic)
+  // AI steps run in the browser (Firebase AI Logic hybrid inference).
+  HybridKioskSession? _hybrid;
+  AiTrace? _lastAiTrace; // drives the live On-device / Cloud badge
   bool _isSessionActive = false;
   SessionState _sessionState = SessionState.idle;
   String? _currentQuestion;
@@ -146,7 +149,13 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
 
       setState(() {
         _sessionId = response.sessionId;
-        _hybrid = HybridKioskSession(response.sessionId);
+        _hybrid = HybridKioskSession(
+          response.sessionId,
+          onTrace: (t) {
+            if (mounted) setState(() => _lastAiTrace = t);
+          },
+        );
+        _lastAiTrace = null;
         _isSessionActive = true;
         _sessionState = SessionState.waitingForInitialComplaint;
         _isProcessing = false;
@@ -181,6 +190,7 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
       _sessionState = SessionState.idle;
       _sessionId = null;
       _hybrid = null;
+      _lastAiTrace = null;
       _currentQuestion = null;
       _isRecording = false;
       _isProcessing = false;
@@ -333,6 +343,10 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
             builder:
                 (context) => CompletionScreen(
                   finishResponse: response,
+                  aiTraces: [
+                    for (final t in _hybrid?.traces ?? const <AiTrace>[])
+                      t.toJson(),
+                  ],
                   onDone: () {
                     Navigator.of(context).pop();
                     _endSession();
@@ -405,6 +419,7 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
       _sessionState = SessionState.idle;
       _sessionId = null;
       _hybrid = null;
+      _lastAiTrace = null;
       _currentQuestion = null;
       _patientName = '';
       _patientPhone = '';
@@ -617,7 +632,25 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
                           ],
                         ),
                       ),
-                      const SizedBox(height: 20),
+                      const SizedBox(height: 8),
+
+                      // Hybrid AI indicator: Nano status + where the last
+                      // AI step ran (Firebase AI Logic hybrid inference).
+                      Wrap(
+                        alignment: WrapAlignment.center,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 10,
+                        runSpacing: 6,
+                        children: [
+                          OnDeviceModelChip(
+                            status: _onDeviceStatus,
+                            downloadProgress: _onDeviceDownloadProgress,
+                          ),
+                          if (_isSessionActive && _lastAiTrace != null)
+                            AiSourceBadge.fromTrace(_lastAiTrace!.toJson()),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
 
                       // Main action button (wide rectangle)
                       Center(
@@ -928,10 +961,14 @@ class CompletionScreen extends StatelessWidget {
   final FinishResponse finishResponse;
   final VoidCallback onDone;
 
+  /// Where each AI step of this session ran (On-device / Cloud).
+  final List<Map<String, dynamic>> aiTraces;
+
   const CompletionScreen({
     super.key,
     required this.finishResponse,
     required this.onDone,
+    this.aiTraces = const [],
   });
 
   @override
@@ -1075,6 +1112,33 @@ class CompletionScreen extends StatelessWidget {
                         ),
                       ],
                     ),
+                    if (aiTraces.isNotEmpty) ...[
+                      const SizedBox(height: 16),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.grey.shade300),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'How your answers were processed',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFF003366),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            AiTraceSummary(traces: aiTraces, dense: true),
+                          ],
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 24),
 
                     // Done button

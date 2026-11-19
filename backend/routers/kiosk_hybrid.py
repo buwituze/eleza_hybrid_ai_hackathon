@@ -155,6 +155,20 @@ def _record_traces(session, traces: list[AiTrace]) -> None:
         session.ai_trace.append(t.model_dump())
 
 
+def _ai_summary(traces: list[dict]) -> dict:
+    """Counts for the On-device / Cloud badges (doctor brief, demo)."""
+    on_device = sum(1 for t in traces if t.get("source") == "on_device")
+    in_cloud = sum(1 for t in traces if t.get("source") == "in_cloud")
+    fallbacks = sum(1 for t in traces if t.get("fallback_reason"))
+    return {
+        "total_steps": len(traces),
+        "on_device": on_device,
+        "in_cloud": in_cloud,
+        "cloud_fallbacks": fallbacks,
+        "on_device_share": round(on_device / len(traces), 2) if traces else 0.0,
+    }
+
+
 def _conversation(session) -> dict:
     return {
         "initial": session.transcript,
@@ -425,7 +439,10 @@ async def kiosk_complete(session_id: str, body: CompleteRequest):
         ai_fields=body.brief,
     )
     brief["ai_trace"] = list(session.ai_trace)
+    brief["ai_summary"] = _ai_summary(session.ai_trace)
     brief["patient_message_from_template"] = used_template
+    if session.score.get("safety_override"):
+        brief["safety_override"] = session.score["safety_override"]
 
     session.patient_message = message
     session.doctor_brief = brief
