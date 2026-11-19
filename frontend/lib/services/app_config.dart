@@ -18,12 +18,35 @@ class AppConfig {
   /// Parameter keys. Add new parameters here AND to [defaults].
   static const kConfigVersion = 'config_version';
 
+  // Hybrid inference (read by ClinicalAIConfig in clinical_ai.dart).
+  // Mode values: prefer_on_device | only_on_device | prefer_in_cloud |
+  // only_in_cloud. Translation is not configurable (always cloud).
+  static const kModeExtraction = 'ai_mode_extraction';
+  static const kModeQuestion = 'ai_mode_question';
+  static const kModeScore = 'ai_mode_score';
+  static const kModeRouting = 'ai_mode_routing';
+  static const kModeGuidance = 'ai_mode_guidance';
+  static const kModeBrief = 'ai_mode_brief';
+  static const kOnDeviceTimeoutMs = 'ai_on_device_timeout_ms';
+  static const kSlowDeviceCooldownMs = 'ai_slow_device_cooldown_ms';
+
   /// In-app defaults. A parameter that is not in this map has no default and
   /// reads as ''/0/false until the console provides it, so keep every key here.
   static const Map<String, Object> defaults = {
     // Shows which config the kiosk is running: 'in-app defaults' until the
     // console publishes a value for it (e.g. 'v1 · 2026-11-20').
     kConfigVersion: 'in-app defaults',
+
+    kModeExtraction: 'prefer_on_device',
+    kModeQuestion: 'prefer_on_device',
+    kModeScore: 'prefer_in_cloud',
+    kModeRouting: 'prefer_in_cloud',
+    kModeGuidance: 'prefer_on_device',
+    kModeBrief: 'prefer_on_device',
+    // How long Nano gets before the cloud answers instead.
+    kOnDeviceTimeoutMs: 12000,
+    // After a timeout, skip Nano for this long (slow kiosk hardware).
+    kSlowDeviceCooldownMs: 300000,
   };
 
   /// How long startup waits for the network before using cached/default values.

@@ -359,7 +359,18 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
                 'Remote Config: ${AppConfig.getString(AppConfig.kConfigVersion)}'
                 ' (${AppConfig.sourceOf(AppConfig.kConfigVersion)})',
               ),
-              subtitle: Text(AppConfig.lastFetchStatus),
+              subtitle: SelectableText(
+                [
+                  AppConfig.lastFetchStatus,
+                  for (final step in ClinicalStep.values)
+                    '${step.wire}: ${ClinicalAIConfig.configuredMode(step).wire}',
+                  'on-device timeout: '
+                      '${ClinicalAIConfig.onDeviceTimeout.inMilliseconds} ms '
+                      '(${AppConfig.sourceOf(AppConfig.kOnDeviceTimeoutMs)})',
+                  'slow-device cool-down: '
+                      '${ClinicalAIConfig.slowDeviceCooldown.inSeconds} s',
+                ].join('\n'),
+              ),
             ),
           ),
           Card(

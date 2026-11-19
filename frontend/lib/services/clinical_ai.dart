@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import 'app_config.dart';
 import 'hybrid_ai_service.dart';
 
 /// The AI steps of the Eleza kiosk pipeline that run in the browser through
@@ -19,7 +20,8 @@ enum ClinicalStep {
   final String wire;
 }
 
-/// Where each step runs. Defaults below; Remote Config overrides them later.
+/// Where each step runs. Values come from Remote Config (AppConfig), with
+/// in-app defaults; invalid console values fall back to those defaults.
 ///
 /// Why this split:
 /// - Gemini Nano only handles English, so anything that must read or write
@@ -32,14 +34,14 @@ enum ClinicalStep {
 class ClinicalAIConfig {
   ClinicalAIConfig._();
 
-  static final Map<ClinicalStep, InferenceMode> modes = {
-    ClinicalStep.translation: InferenceMode.onlyInCloud,
-    ClinicalStep.extraction: InferenceMode.preferOnDevice,
-    ClinicalStep.question: InferenceMode.preferOnDevice,
-    ClinicalStep.score: InferenceMode.preferInCloud,
-    ClinicalStep.routing: InferenceMode.preferInCloud,
-    ClinicalStep.guidance: InferenceMode.preferOnDevice,
-    ClinicalStep.brief: InferenceMode.preferOnDevice,
+  /// Remote Config key for each configurable step.
+  static const _modeKeys = {
+    ClinicalStep.extraction: AppConfig.kModeExtraction,
+    ClinicalStep.question: AppConfig.kModeQuestion,
+    ClinicalStep.score: AppConfig.kModeScore,
+    ClinicalStep.routing: AppConfig.kModeRouting,
+    ClinicalStep.guidance: AppConfig.kModeGuidance,
+    ClinicalStep.brief: AppConfig.kModeBrief,
   };
 
   /// Steps whose OUTPUT is patient-facing text in the session language.
@@ -48,13 +50,47 @@ class ClinicalAIConfig {
     ClinicalStep.guidance,
   };
 
-  static Duration onDeviceTimeout = const Duration(seconds: 12);
+  /// How long Nano gets before the cloud answers (1 s – 2 min).
+  static Duration get onDeviceTimeout => Duration(
+    milliseconds: _clampedMs(AppConfig.kOnDeviceTimeoutMs, 1000, 120000),
+  );
+
+  /// How long Nano is skipped after a timeout (0 – 1 h).
+  static Duration get slowDeviceCooldown => Duration(
+    milliseconds: _clampedMs(AppConfig.kSlowDeviceCooldownMs, 0, 3600000),
+  );
+
+  /// The configured mode for [step], before language rules.
+  static InferenceMode configuredMode(ClinicalStep step) {
+    final key = _modeKeys[step];
+    if (key == null) return InferenceMode.onlyInCloud; // translation
+    return _parseMode(AppConfig.getString(key)) ??
+        _parseMode('${AppConfig.defaults[key]}') ??
+        InferenceMode.preferOnDevice;
+  }
 
   static InferenceMode modeFor(ClinicalStep step, {required String language}) {
+    // Safety rules that Remote Config cannot override:
+    // translation reads Kinyarwanda, and Nano cannot write Kinyarwanda.
+    if (step == ClinicalStep.translation) return InferenceMode.onlyInCloud;
     if (language != 'english' && _patientLanguageSteps.contains(step)) {
-      return InferenceMode.onlyInCloud; // Nano cannot write Kinyarwanda
+      return InferenceMode.onlyInCloud;
     }
-    return modes[step] ?? InferenceMode.preferOnDevice;
+    return configuredMode(step);
+  }
+
+  static InferenceMode? _parseMode(String raw) {
+    final v = raw.trim().toLowerCase();
+    for (final m in InferenceMode.values) {
+      if (m.wire == v) return m;
+    }
+    return null;
+  }
+
+  static int _clampedMs(String key, int min, int max) {
+    final v = AppConfig.getInt(key);
+    if (v <= 0 && min > 0) return (AppConfig.defaults[key] as num).toInt();
+    return v.clamp(min, max);
   }
 }
 
@@ -211,6 +247,7 @@ class ClinicalAI {
         temperature: 0,
         maxOutputTokens: 600,
         onDeviceTimeout: ClinicalAIConfig.onDeviceTimeout,
+        slowDeviceCooldown: ClinicalAIConfig.slowDeviceCooldown,
       );
       final raw = (r.json as Map).cast<String, dynamic>();
       return AiStep(
@@ -287,6 +324,7 @@ class ClinicalAI {
         temperature: 0.2,
         maxOutputTokens: 100,
         onDeviceTimeout: ClinicalAIConfig.onDeviceTimeout,
+        slowDeviceCooldown: ClinicalAIConfig.slowDeviceCooldown,
       );
       final question = _cleanQuestion(r.text);
       if (question == null) {
@@ -438,6 +476,7 @@ class ClinicalAI {
         temperature: 0,
         maxOutputTokens: 300,
         onDeviceTimeout: ClinicalAIConfig.onDeviceTimeout,
+        slowDeviceCooldown: ClinicalAIConfig.slowDeviceCooldown,
       );
       final raw = (r.json as Map).cast<String, dynamic>();
       return AiStep(raw, AiTrace.fromResult(ClinicalStep.score, r));
@@ -511,6 +550,7 @@ class ClinicalAI {
         temperature: 0,
         maxOutputTokens: 250,
         onDeviceTimeout: ClinicalAIConfig.onDeviceTimeout,
+        slowDeviceCooldown: ClinicalAIConfig.slowDeviceCooldown,
       );
       return AiStep(
         (r.json as Map).cast<String, dynamic>(),
@@ -605,6 +645,7 @@ class ClinicalAI {
         temperature: 0.3,
         maxOutputTokens: 200,
         onDeviceTimeout: ClinicalAIConfig.onDeviceTimeout,
+        slowDeviceCooldown: ClinicalAIConfig.slowDeviceCooldown,
       );
       final message = r.text.trim().replaceFirst(
         RegExp(r'^response\s*:\s*', caseSensitive: false),
@@ -709,6 +750,7 @@ class ClinicalAI {
         temperature: 0.1,
         maxOutputTokens: 600,
         onDeviceTimeout: ClinicalAIConfig.onDeviceTimeout,
+        slowDeviceCooldown: ClinicalAIConfig.slowDeviceCooldown,
       );
       return AiStep(
         (r.json as Map).cast<String, dynamic>(),
