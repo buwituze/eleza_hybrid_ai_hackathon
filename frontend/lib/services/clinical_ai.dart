@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import 'app_config.dart';
+import 'clinical_prompts.dart';
 import 'hybrid_ai_service.dart';
 
 /// The AI steps of the Eleza kiosk pipeline that run in the browser through
@@ -160,28 +161,6 @@ class ClinicalAI {
   // on Gemini Nano. The backend re-validates the result and re-checks red
   // flags on the original words.
 
-  static const _extractionSystem =
-      'You are a clinical information extraction assistant at a hospital '
-      'pre-consultation kiosk.\n'
-      'Extract clinical information from the patient conversation.\n'
-      'Rules:\n'
-      '- Extract ONLY facts the patient stated. Never diagnose or guess.\n'
-      '- Use an empty string for anything not stated.\n'
-      '- duration: be specific ("started yesterday", "3 days").\n'
-      '- severity: exact number if given (e.g. "7/10"), else "mild", '
-      '"moderate" or "severe".\n'
-      '- associated_symptoms: other symptoms besides the main one, each a '
-      'short phrase.\n'
-      '- progression: "worsening", "improving" or "stable" if stated.\n'
-      '- patient_name: only the name — drop "My name is", "I am", "Call me".\n'
-      '- patient_age: digits only (e.g. "35"), never words.\n'
-      '- patient_location: "Neighborhood, City" when recognisable '
-      '(e.g. "Kanombe, Kigali").\n'
-      '- red_flags_present: true if ANY of: difficulty breathing, chest pain '
-      'or pressure, fainting or loss of consciousness, severe bleeding, '
-      'coughing or vomiting blood, seizure, sudden vision loss, sudden worst-'
-      'ever pain, cannot move a limb. Otherwise false.';
-
   static const _extractionStringFields = [
     'patient_name',
     'patient_age',
@@ -242,7 +221,7 @@ class ClinicalAI {
           ClinicalStep.extraction,
           language: 'english', // input is English after translation
         ),
-        systemInstruction: _extractionSystem,
+        systemInstruction: ClinicalPrompts.extractionSystem,
         jsonSchema: _extractionSchema,
         temperature: 0,
         maxOutputTokens: 600,
@@ -378,25 +357,6 @@ class ClinicalAI {
   ];
   static const unclearIssue = 'unclear or unclassifiable complaint';
 
-  static const _scoreSystem =
-      'You are a clinical triage scoring assistant. Output a risk score for '
-      'clinician review only.\n'
-      'Rules:\n'
-      '- No diagnosis, no treatment advice, no patient-facing language.\n'
-      '- Output valid JSON only matching the schema.\n'
-      '- suspected_issue must be exactly one value from the allowed list.';
-
-  static const _triageRules =
-      'HIGH: red flag present, OR severity severe/extreme/8-10, OR acute rapid '
-      'onset, OR infant/elderly with moderate+ symptoms.\n'
-      'MEDIUM: moderate severity (4-7/10), symptom hours to days, mild '
-      'associated symptoms, no red flags.\n'
-      'LOW: mild severity (1-3/10), stable for days to weeks, no associated '
-      'symptoms, no red flags.\n'
-      'Confidence: 0.8-1.0 if severity + duration + red flag status all known. '
-      '0.5-0.79 if one missing. Below 0.5 if most missing.\n'
-      'Risk factors: observable facts only. Max 4. Short phrases.';
-
   static const _scoreSchema = <String, dynamic>{
     'type': 'object',
     'properties': {
@@ -464,14 +424,14 @@ class ClinicalAI {
     final prompt =
         'Patient data:\n${const JsonEncoder.withIndent('  ').convert(data)}\n\n'
         'Allowed categories:\n${issueCategories.map((c) => '- $c').join('\n')}\n\n'
-        'Triage rules:\n$_triageRules\n\n'
+        'Triage rules:\n${ClinicalPrompts.triageRules}\n\n'
         'Return the risk score JSON only.';
 
     try {
       final r = await HybridAIService.generate(
         prompt: prompt,
         mode: ClinicalAIConfig.modeFor(ClinicalStep.score, language: 'english'),
-        systemInstruction: _scoreSystem,
+        systemInstruction: ClinicalPrompts.scoreSystem,
         jsonSchema: _scoreSchema,
         temperature: 0,
         maxOutputTokens: 300,
@@ -544,8 +504,7 @@ class ClinicalAI {
           ClinicalStep.routing,
           language: 'english',
         ),
-        systemInstruction:
-            'You are a clinical routing assistant at a hospital. No diagnosis.',
+        systemInstruction: ClinicalPrompts.routingSystem,
         jsonSchema: _routingSchema,
         temperature: 0,
         maxOutputTokens: 250,
@@ -568,39 +527,7 @@ class ClinicalAI {
   // The backend vets the result (no diagnosis/advice words, length) and
   // swaps in a safe template if needed, so the kiosk always gets a message.
 
-  static const _guidanceSystem =
-      'You are a healthcare system assistant in a hospital.\n'
-      'Explain the next steps to a patient using only the system\'s decision.\n'
-      'Rules:\n'
-      '- No disease names. No diagnosis. No medical advice. No causes.\n'
-      '- Do not change the priority level.\n'
-      '- 3 to 5 short sentences. Calm and clear.\n'
-      '- Output the patient message only.\n'
-      '- Write entirely in the language given in the Language field.';
-
   // Few-shot examples folded into one prompt (on-device is single-turn only).
-  static const _guidanceExamples =
-      'Example:\nPriority: HIGH\nComplaint: chest pain\n'
-      'Location: Emergency, Desk 3\nLanguage: english\n'
-      'Response: Your symptoms need prompt medical attention. Please proceed '
-      'to Emergency, Desk 3 right away. A healthcare professional will see you '
-      'shortly. If you feel worse at any time, please notify a staff member '
-      'immediately.\n\n'
-      'Example:\nPriority: HIGH\nComplaint: ububabare bw\'igituza\n'
-      'Location: Emergency, Desk 3\nLanguage: kinyarwanda\n'
-      'Response: Ibimenyetso byawe bisaba ubuvuzi bwihutirwa. Nyamuneka jya '
-      'kuri Emergency, Desk 3 vuba. Umuganga azakureba vuba. Niba wumvise ko '
-      'ibintu birushijeho kuba bibi, menyesha umukozi uhari ako kanya.\n\n'
-      'Example:\nPriority: MEDIUM\nComplaint: headache\n'
-      'Location: Waiting Area B\nLanguage: english\n'
-      'Response: Thank you for sharing your information. Please take a seat in '
-      'Waiting Area B and a healthcare professional will see you soon. If your '
-      'condition changes while you wait, please let a staff member know.\n\n'
-      'Example:\nPriority: LOW\nComplaint: sore throat\n'
-      'Location: General Outpatient\nLanguage: english\n'
-      'Response: Thank you. Your information has been recorded. Please wait in '
-      'the General Outpatient area and you will be called when it is your '
-      'turn.';
 
   /// Model E. [score] and [locationHint] come from POST /score (after the
   /// backend's safety rules). Returns an empty message — no model call — when
@@ -624,7 +551,7 @@ class ClinicalAI {
 
     final redFlag = extraction['red_flags_present'] == true;
     final prompt =
-        '$_guidanceExamples\n\nNow generate for:\n'
+        '${ClinicalPrompts.guidanceExamples}\n\nNow generate for:\n'
         'Priority: $priority\n'
         'Complaint: ${field('chief_complaint')}\n'
         'Duration: ${field('duration')}\n'
@@ -641,7 +568,7 @@ class ClinicalAI {
           ClinicalStep.guidance,
           language: language,
         ),
-        systemInstruction: _guidanceSystem,
+        systemInstruction: ClinicalPrompts.guidanceSystem,
         temperature: 0.3,
         maxOutputTokens: 200,
         onDeviceTimeout: ClinicalAIConfig.onDeviceTimeout,
@@ -664,15 +591,6 @@ class ClinicalAI {
   // English text (translated turns for Kinyarwanda sessions). The model only
   // writes the narrative parts; the backend assembles the full brief
   // (model_f.build_brief) and falls back to a factual template if needed.
-
-  static const _briefSystem =
-      'You are a clinical documentation assistant. Write a patient brief for '
-      'a doctor.\n'
-      'Rules:\n'
-      '- Report only what the patient said and what the system recorded.\n'
-      '- No clinical interpretation, diagnosis, or advice.\n'
-      '- Clinical language. Past tense. Concise.\n'
-      '- Output valid JSON only matching the schema.';
 
   static const _briefSchema = <String, dynamic>{
     'type': 'object',
@@ -745,7 +663,7 @@ class ClinicalAI {
       final r = await HybridAIService.generate(
         prompt: prompt,
         mode: ClinicalAIConfig.modeFor(ClinicalStep.brief, language: 'english'),
-        systemInstruction: _briefSystem,
+        systemInstruction: ClinicalPrompts.briefSystem,
         jsonSchema: _briefSchema,
         temperature: 0.1,
         maxOutputTokens: 600,
@@ -780,19 +698,6 @@ class ClinicalAI {
 
   // ── Translation (Kinyarwanda → English, cloud) ──────────────────────────
 
-  static const _translationSystem =
-      'You are a medical interpreter at a Rwandan hospital. Translate what a '
-      'patient said (and the question they were answering) from Kinyarwanda '
-      'into plain English for clinicians.\n'
-      'Rules:\n'
-      '- Patients often mix Kinyarwanda with English or French words; '
-      'translate the meaning of the whole utterance.\n'
-      '- Translate faithfully. Do not add, interpret, diagnose or summarise.\n'
-      '- Keep names, numbers, ages, phone numbers, durations, places and body '
-      'parts exactly.\n'
-      '- If a part is already English, keep it as is.\n'
-      '- If the text is empty or unintelligible, return it unchanged.';
-
   static const _translationSchema = <String, dynamic>{
     'type': 'object',
     'properties': {
@@ -826,7 +731,7 @@ class ClinicalAI {
           ClinicalStep.translation,
           language: 'kinyarwanda',
         ),
-        systemInstruction: _translationSystem,
+        systemInstruction: ClinicalPrompts.translationSystem,
         jsonSchema: _translationSchema,
         temperature: 0,
         maxOutputTokens: 400,

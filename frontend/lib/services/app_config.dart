@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:firebase_remote_config/firebase_remote_config.dart';
 import 'package:flutter/foundation.dart';
 
+import 'clinical_prompts.dart';
+
 /// Firebase Remote Config with in-app defaults.
 ///
 /// Every value has a default compiled into the app ([defaults]), so the kiosk
@@ -47,6 +49,9 @@ class AppConfig {
     kOnDeviceTimeoutMs: 12000,
     // After a timeout, skip Nano for this long (slow kiosk hardware).
     kSlowDeviceCooldownMs: 300000,
+
+    // AI prompts (prompt_* keys), defaults in clinical_prompts.dart.
+    ...ClinicalPrompts.defaults,
   };
 
   /// How long startup waits for the network before using cached/default values.

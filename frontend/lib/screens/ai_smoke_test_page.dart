@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/app_config.dart';
 import '../services/clinical_ai.dart';
+import '../services/clinical_prompts.dart';
 import '../services/hybrid_ai_service.dart';
 
 /// Debug-only page (route: /ai-smoke-test) that proves Firebase AI Logic
@@ -369,6 +370,8 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
                       '(${AppConfig.sourceOf(AppConfig.kOnDeviceTimeoutMs)})',
                   'slow-device cool-down: '
                       '${ClinicalAIConfig.slowDeviceCooldown.inSeconds} s',
+                  'prompts from console: '
+                      '${ClinicalPrompts.fromConsole.isEmpty ? 'none (in-app defaults)' : ClinicalPrompts.fromConsole.join(', ')}',
                 ].join('\n'),
               ),
             ),
