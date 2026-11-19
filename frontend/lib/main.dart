@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
 import 'firebase_options.dart';
+import 'services/app_config.dart';
 import 'screens/voice_interface_page.dart';
 import 'screens/ai_smoke_test_page.dart';
 import 'screens/patient_detail_page.dart';
@@ -24,6 +25,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await _activateAppCheck();
+  await AppConfig.init(); // Remote Config; never blocks for more than ~5 s
   await EasyLocalization.ensureInitialized();
 
   runApp(
@@ -232,8 +234,7 @@ class _MyAppState extends State<MyApp> {
         '/device-configuration': (context) => const DeviceConfigurationScreen(),
         '/voice-interface': (context) => const VoiceInterfacePage(),
         '/login': (context) => const LoginScreen(),
-        if (kDebugMode)
-          '/ai-smoke-test': (context) => const AiSmokeTestPage(),
+        if (kDebugMode) '/ai-smoke-test': (context) => const AiSmokeTestPage(),
         '/patient-detail':
             (context) => const PatientDetailPage(
               userRole: 'doctor',

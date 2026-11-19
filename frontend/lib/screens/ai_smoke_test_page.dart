@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../services/app_config.dart';
 import '../services/clinical_ai.dart';
 import '../services/hybrid_ai_service.dart';
 
@@ -351,6 +352,16 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.tune),
+              title: Text(
+                'Remote Config: ${AppConfig.getString(AppConfig.kConfigVersion)}'
+                ' (${AppConfig.sourceOf(AppConfig.kConfigVersion)})',
+              ),
+              subtitle: Text(AppConfig.lastFetchStatus),
+            ),
+          ),
           Card(
             child: ListTile(
               title: Text('On-device model: ${_status?.name ?? 'checking…'}'),
