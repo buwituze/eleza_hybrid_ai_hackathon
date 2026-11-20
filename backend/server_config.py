@@ -80,7 +80,14 @@ async def load() -> None:
         _status = "loaded"
         print(f"Remote Config (server) loaded: {snapshot()['values']}")
     except Exception as e:  # network, permissions, bad JSON …
-        _status = f"{'last good values' if _config else 'defaults'} (load failed: {type(e).__name__})"
+        fallback = "last good values" if _config else "defaults"
+        if type(e).__name__ == "NotFoundError":
+            # Credentials work; nothing has been published in the console's
+            # Remote Config → Server template yet. Expected until then.
+            _status = f"{fallback} (no Server template published yet)"
+            print(f"Remote Config (server): no Server template published yet, using {fallback}")
+            return
+        _status = f"{fallback} (load failed: {type(e).__name__})"
         print(f"Remote Config (server) not loaded, using {_status}: {e}")
 
 
