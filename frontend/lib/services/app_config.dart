@@ -32,6 +32,10 @@ class AppConfig {
   static const kOnDeviceTimeoutMs = 'ai_on_device_timeout_ms';
   static const kSlowDeviceCooldownMs = 'ai_slow_device_cooldown_ms';
 
+  // Kiosk UI: show the On-device / Cloud indicators to patients. Off in a real
+  // hospital (patients don't need it); turn on for demos and judging.
+  static const kKioskShowAiDetails = 'kiosk_show_ai_details';
+
   /// In-app defaults. A parameter that is not in this map has no default and
   /// reads as ''/0/false until the console provides it, so keep every key here.
   static const Map<String, Object> defaults = {
@@ -49,6 +53,7 @@ class AppConfig {
     kOnDeviceTimeoutMs: 12000,
     // After a timeout, skip Nano for this long (slow kiosk hardware).
     kSlowDeviceCooldownMs: 300000,
+    kKioskShowAiDetails: false,
 
     // AI prompts (prompt_* keys), defaults in clinical_prompts.dart.
     ...ClinicalPrompts.defaults,

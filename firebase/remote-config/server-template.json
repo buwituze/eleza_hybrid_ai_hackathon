@@ -1,0 +1,25 @@
+{
+  "parameters": {
+    "triage_low_confidence_threshold": {
+      "defaultValue": {
+        "value": "0.4"
+      },
+      "valueType": "NUMBER",
+      "description": "Model D confidence below this: patient gets the safe template message (0-0.9)"
+    },
+    "triage_max_turns": {
+      "defaultValue": {
+        "value": "10"
+      },
+      "valueType": "NUMBER",
+      "description": "Maximum questions the kiosk asks before scoring (3-15)"
+    },
+    "triage_high_severity_min": {
+      "defaultValue": {
+        "value": "8"
+      },
+      "valueType": "NUMBER",
+      "description": "Patient-reported severity (0-10) at or above this forces HIGH priority (5-10)"
+    }
+  }
+}

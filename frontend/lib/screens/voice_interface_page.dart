@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:gif_view/gif_view.dart';
 import '../services/api_service.dart';
+import '../services/app_config.dart';
 import '../services/audio_service.dart';
 import '../services/hybrid_ai_service.dart';
 import '../services/hybrid_kiosk_flow.dart';
@@ -636,21 +637,25 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
 
                       // Hybrid AI indicator: Nano status + where the last
                       // AI step ran (Firebase AI Logic hybrid inference).
-                      Wrap(
-                        alignment: WrapAlignment.center,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        spacing: 10,
-                        runSpacing: 6,
-                        children: [
-                          OnDeviceModelChip(
-                            status: _onDeviceStatus,
-                            downloadProgress: _onDeviceDownloadProgress,
-                          ),
-                          if (_isSessionActive && _lastAiTrace != null)
-                            AiSourceBadge.fromTrace(_lastAiTrace!.toJson()),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
+                      // Hidden from patients unless Remote Config
+                      // kiosk_show_ai_details is on (demo / judging).
+                      if (AppConfig.getBool(AppConfig.kKioskShowAiDetails)) ...[
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          spacing: 10,
+                          runSpacing: 6,
+                          children: [
+                            OnDeviceModelChip(
+                              status: _onDeviceStatus,
+                              downloadProgress: _onDeviceDownloadProgress,
+                            ),
+                            if (_isSessionActive && _lastAiTrace != null)
+                              AiSourceBadge.fromTrace(_lastAiTrace!.toJson()),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                      ],
 
                       // Main action button (wide rectangle)
                       Center(
@@ -1112,7 +1117,8 @@ class CompletionScreen extends StatelessWidget {
                         ),
                       ],
                     ),
-                    if (aiTraces.isNotEmpty) ...[
+                    if (aiTraces.isNotEmpty &&
+                        AppConfig.getBool(AppConfig.kKioskShowAiDetails)) ...[
                       const SizedBox(height: 16),
                       Container(
                         width: double.infinity,

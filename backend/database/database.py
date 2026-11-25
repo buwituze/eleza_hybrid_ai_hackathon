@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+import time
 import uuid
 from typing import Optional, Dict, List, Any, Tuple
 from contextlib import contextmanager
@@ -16,6 +17,11 @@ logger = logging.getLogger(__name__)
 
 class DatabaseConnection:
     _connection_pool: Optional[pool.ThreadedConnectionPool] = None
+    # id(conn) -> time.monotonic() when it was last returned to the pool
+    _last_used: Dict[int, float] = {}
+    # Connections idle longer than this are checked before use. Serverless
+    # Postgres (Neon) suspends after ~5 min idle and silently drops them.
+    _STALE_AFTER_SECONDS = 30
     
     @classmethod
     def initialize_pool(cls, min_conn: int = 1, max_conn: int = 10):
@@ -31,7 +37,9 @@ class DatabaseConnection:
                 database=os.getenv('DB_NAME', 'pre_consultation_db'),
                 user=os.getenv('DB_USER', 'postgres'),
                 password=os.getenv('DB_PASSWORD', ''),
-                cursor_factory=RealDictCursor
+                cursor_factory=RealDictCursor,
+                connect_timeout=15,
+                keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3,
             )
             logger.info("Database connection pool initialized")
         except Exception as e:
@@ -51,16 +59,57 @@ class DatabaseConnection:
         if cls._connection_pool is None:
             cls.initialize_pool()
         
-        conn = cls._connection_pool.getconn()
+        conn = cls._get_live_connection()
         try:
             yield conn
             conn.commit()
         except Exception as e:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except psycopg2.Error:
+                pass  # connection already broken; it is discarded below
             logger.error(f"Database error: {e}")
             raise
         finally:
+            cls._release(conn)
+
+    @classmethod
+    def _get_live_connection(cls):
+        """A pooled connection that still works: closed or dropped ones
+        (e.g. after the database was suspended) are replaced with new ones."""
+        for _ in range(3):
+            conn = cls._connection_pool.getconn()
+            if conn.closed:
+                cls._discard(conn)
+                continue
+            idle = time.monotonic() - cls._last_used.get(id(conn), 0.0)
+            if idle > cls._STALE_AFTER_SECONDS:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT 1")
+                    conn.rollback()
+                except psycopg2.Error:
+                    logger.warning("Dropped a stale database connection; reconnecting")
+                    cls._discard(conn)
+                    continue
+            return conn
+        return cls._connection_pool.getconn()
+
+    @classmethod
+    def _release(cls, conn):
+        if conn.closed:
+            cls._discard(conn)
+        else:
+            cls._last_used[id(conn)] = time.monotonic()
             cls._connection_pool.putconn(conn)
+
+    @classmethod
+    def _discard(cls, conn):
+        cls._last_used.pop(id(conn), None)
+        try:
+            cls._connection_pool.putconn(conn, close=True)
+        except Exception:
+            pass
     
     @classmethod
     def execute_query(cls, query: str, params: Optional[Tuple] = None, fetch_one: bool = False):

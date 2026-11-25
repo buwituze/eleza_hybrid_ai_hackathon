@@ -22,12 +22,14 @@ class _SmokeCase {
     this.prompt, {
     this.jsonSchema,
     this.onDeviceTimeout,
+    this.slowDeviceCooldown,
   });
   final String label;
   final InferenceMode mode;
   final String prompt;
   final Map<String, dynamic>? jsonSchema;
   final Duration? onDeviceTimeout;
+  final Duration? slowDeviceCooldown;
 }
 
 class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
@@ -64,6 +66,9 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
       InferenceMode.preferOnDevice,
       'In one sentence, what should a patient with chest pain do?',
       onDeviceTimeout: Duration(seconds: 3),
+      // This test times out on purpose: don't let it pause Nano for the
+      // clinical tests that run after it.
+      slowDeviceCooldown: Duration.zero,
     ),
   ];
 
@@ -108,6 +113,7 @@ class _AiSmokeTestPageState extends State<AiSmokeTestPage> {
         mode: c.mode,
         jsonSchema: c.jsonSchema,
         onDeviceTimeout: c.onDeviceTimeout,
+        slowDeviceCooldown: c.slowDeviceCooldown,
       );
       final body = c.jsonSchema != null ? r.json.toString() : r.text.trim();
       final fallback =
