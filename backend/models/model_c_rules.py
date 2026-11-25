@@ -40,7 +40,7 @@ PATIENT_INFO_QUESTIONS = {
         },
         {
             "id": "patient_gender",
-            "question": "Uri umugabo cg umutegarugori?",
+            "question": "Uri umugabo, umugore, non-binary, cyangwa ikindi?",
             "targets": "patient_gender",
             "priority": 3,
             "required": True
@@ -77,7 +77,7 @@ PATIENT_INFO_QUESTIONS = {
         },
         {
             "id": "patient_gender",
-            "question": "What is your gender? Male or female?",
+            "question": "What is your gender? Male, female, non-binary, or other?",
             "targets": "patient_gender",
             "priority": 3,
             "required": True

@@ -251,6 +251,25 @@ def _resolve_patient_info_target(question: str) -> Optional[str]:
     return None
 
 
+_GENDER_WORDS = [
+    # (canonical value, words that mean it; checked in this order)
+    ("non-binary", ("non-binary", "nonbinary", "non binary")),
+    ("female", ("female", "woman", "girl", "umugore", "umutegarugori", "gore")),
+    ("male", ("male", "man", "boy", "umugabo", "gabo")),
+    ("other", ("other", "ikindi", "prefer not", "rather not", "sinshaka")),
+]
+
+
+def _normalize_gender(answer: str) -> str:
+    """Map a spoken answer to male / female / non-binary / other.
+    Unrecognised answers are kept but capped (DB column is VARCHAR(20))."""
+    text = f" {re.sub(r'[^a-z -]', ' ', answer.lower())} "
+    for value, words in _GENDER_WORDS:
+        if any(f" {w} " in text or (" " in w and w in text) for w in words):
+            return value
+    return answer.strip()[:20]
+
+
 def _capture_patient_info_from_answer(session, question: str, answer: str) -> None:
     target = _resolve_patient_info_target(question)
     if not target:
@@ -272,8 +291,9 @@ def _capture_patient_info_from_answer(session, question: str, answer: str) -> No
         else:
             session.extraction["patient_age"] = clean_answer
     elif target == "patient_gender":
-        session.patient_gender = clean_answer
-        session.extraction["patient_gender"] = clean_answer
+        gender = _normalize_gender(clean_answer)
+        session.patient_gender = gender
+        session.extraction["patient_gender"] = gender
     elif target == "patient_phone":
         session.patient_phone = clean_answer
         session.extraction["patient_phone"] = clean_answer

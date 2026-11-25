@@ -86,6 +86,10 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
   /// Start button. Never blocks the session: until Nano is ready, hybrid
   /// prompts fall back to the cloud.
   void _warmUpOnDeviceModel() {
+    if (HybridAIService.isSupported &&
+        _onDeviceStatus == OnDeviceStatus.available) {
+      _warmUpNanoPrompt();
+    }
     if (!HybridAIService.isSupported ||
         _onDeviceStatus == OnDeviceStatus.available ||
         _onDeviceStatus == OnDeviceStatus.unsupported ||
@@ -104,12 +108,31 @@ class _VoiceInterfacePageState extends State<VoiceInterfacePage> {
         )
         .then((status) {
           debugPrint('On-device model after prepare: ${status.name}');
+          if (status == OnDeviceStatus.available) _warmUpNanoPrompt();
           if (mounted && _onDeviceStatus != OnDeviceStatus.available) {
             setState(() => _onDeviceStatus = status);
           }
         })
         .catchError((Object e) {
           debugPrint('On-device model warm-up failed (cloud will be used): $e');
+        });
+  }
+
+  /// The first Gemini Nano prompt after a page load is slow (model loading,
+  /// ~30 s on low-end laptops). Run a tiny prompt while the greeting plays so
+  /// the first real AI step finds Nano warm instead of timing out to the
+  /// cloud. Fire-and-forget: any error just means the cloud is used.
+  void _warmUpNanoPrompt() {
+    HybridAIService.generate(
+          prompt: 'Reply with the single word OK.',
+          mode: InferenceMode.onlyOnDevice,
+          maxOutputTokens: 5,
+        )
+        .then((r) {
+          debugPrint('Nano warm-up done in ${r.latency.inMilliseconds} ms');
+        })
+        .catchError((Object e) {
+          debugPrint('Nano warm-up skipped (cloud will be used): $e');
         });
   }
 

@@ -66,7 +66,7 @@ _DEPARTMENT_RULES: dict[tuple, str] = {
 
 # Department → queue name + waiting area description
 _DEPARTMENT_CONFIG: dict[str, dict] = {
-    "Emergency":      {"queue": "emergency",    "location": "Emergency Department — present to the desk immediately"},
+    "Emergency":      {"queue": "emergency",    "location": "Emergency Department"},
     "General Medicine":{"queue": "general",     "location": "Waiting Area A — General Outpatient"},
     "Orthopaedics":   {"queue": "ortho",        "location": "Waiting Area B — Orthopaedics"},
     "Dermatology":    {"queue": "derm",         "location": "Waiting Area C — Dermatology"},
