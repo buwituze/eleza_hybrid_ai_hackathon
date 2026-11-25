@@ -1,599 +1,240 @@
+# Eleza — a voice-first hospital check-in that runs its AI on the kiosk
+
+**Patients speak (Kinyarwanda or English). Doctors receive a structured brief before the patient walks in.**
+Eleza uses **Firebase AI Logic hybrid inference** so clinical text is processed **on-device with Gemini Nano** whenever the kiosk can, and falls back to **Gemini in the cloud** when it can't — step by step, with safety rules the browser can't override.
+
+| | |
+|---|---|
+| **Demo video (3 min)** | _TODO: YouTube link_ |
+| **Live app** | _TODO: Firebase Hosting URL_ — see [Try it](#try-it-judges) |
+| **Platform** | Web (Chrome desktop) · Firebase AI Logic + Gemini Nano |
+| **Firebase** | AI Logic (hybrid) · App Check · Remote Config (client **and** server) · Hosting |
+| **License** | [Apache 2.0](LICENSE) |
+
 ---
-title: Eleza Pre-Consultation Backend
-emoji: 🏥
-colorFrom: green
-colorTo: blue
-sdk: docker
-app_port: 7860
-pinned: false
+
+## The problem
+
+In Rwanda there are fewer than 2 physicians per 10,000 people, and the hospitals most of us rely on are overcrowded. Patients queue for hours — sometimes four — for a five-minute consultation, and the doctor starts that consultation knowing nothing about them. Important symptoms are missed because there is no time to ask.
+
+Digital intake tools exist, but they are **text-based**: they assume literacy, a keyboard and good internet. Rwanda's literacy rate is around 76%, while about 98% of people speak Kinyarwanda. A form excludes exactly the patients who wait the longest.
+
+## What Eleza does
+
+**1. Patient kiosk (voice only).** At the hospital entrance a patient presses one button and talks. Eleza greets them, asks for name, age, gender, phone and location, then asks **adaptive follow-up questions** about their symptoms — out loud, in their language. No typing, no reading required.
+
+**2. Triage + routing.** When it has enough information, Eleza scores urgency (HIGH / MEDIUM / LOW), assigns a department and queue number, tells the patient where to go (spoken and on screen), and sends an SMS with their queue assignment.
+
+**3. Doctor dashboard.** Before the patient walks in, the doctor sees a **structured brief**: chief complaint, symptoms, duration, severity, red flags, a short factual narrative, key findings, the full transcript and the audio clips. Hospital and platform admins manage facilities, doctors, rooms and queues.
+
+Eleza is a **supervised support tool, not a diagnostic system**: it never names a disease or gives medical advice to the patient, and every brief is reviewed by a clinician.
+
+<!-- TODO screenshots: kiosk with On-device/Cloud badges · completion screen · doctor brief · Remote Config console
+![Kiosk](docs/images/kiosk.png) ![Doctor brief](docs/images/brief.png) -->
+
 ---
 
-# Pre-Consultation Agent
+## Why hybrid AI is the right design here
 
-For component specific details, see:
+A hospital kiosk is a near-perfect case for on-device AI, and also a case where *pure* on-device would be dangerous:
 
-- [Backend README](backend/README.md)
-- [Frontend README](frontend/README.md)
+| Need | How the hybrid design answers it |
+|---|---|
+| **Medical privacy** | Symptom extraction, follow-up questions, patient guidance and the doctor brief can run **inside Chrome on the kiosk** with Gemini Nano — the patient's words don't have to leave the device. |
+| **Cost at scale** | On-device inference is free per call. A public hospital can't pay per token for every patient's every answer. |
+| **Unreliable hardware and networks** | Kiosks are often low-end machines. Every on-device step has a **deadline**; if Nano is missing, slow or failing, Firebase AI Logic answers from the cloud and the patient never notices. |
+| **Kinyarwanda** | Gemini Nano is English-only. Eleza translates Kinyarwanda to English **in the cloud**, so the on-device steps only ever see English — and anything the patient *hears* in Kinyarwanda is always generated in the cloud. |
+| **Safety-critical triage** | The triage score prefers the stronger cloud model, and the **backend re-checks every AI result** with deterministic rules (red flags, severity thresholds) that no model — on-device or cloud — can downgrade. |
 
-## Overview
+The result is not "on-device *or* cloud" but a **per-step decision**, made for clinical reasons, and **changeable live from the Firebase console**.
 
-Eleza is a faster way to talk to our doctors. This project is a pre-consultation agent — a hospital-owned, voice-based system that helps collect patient information before a doctor consultation.
+---
 
-It supports Kinyarwanda and English, asks follow-up questions to clarify symptoms, and provides structured outputs for clinical review.
+## How it works
 
-This is a supervised support tool, not a diagnosis system.
-
-## Project Description
-
-The project combines:
-
-- A **FastAPI backend** for voice processing, session flow, triage logic, and clinician-facing endpoints.
-- A **Flutter frontend** for kiosk/patient interaction and doctor review workflows.
-- Testing scripts and notebooks to validate model behavior and system integration.
-
-Expected value:
-
-- Reduce time spent in first-level intake.
-- Improve symptom capture quality before consultation.
-- Help doctors quickly review patient summaries and suggested next actions.
-
-## System Architecture
-
-### How It Works (End-to-End Flow)
-
-```
-Patient speaks into kiosk
-        │
-        ▼
-┌──────────────────┐
-│  Model A: STT    │  Whisper (Kinyarwanda or English)
-│  Speech-to-Text  │  Transcribes audio to text
-└────────┬─────────┘
-         ▼
-┌──────────────────┐
-│  Model B: NLU    │  Gemini — extracts chief complaint,
-│  Understanding   │  symptoms, severity, red flags
-└────────┬─────────┘
-         ▼
-┌──────────────────┐
-│  Model C: Policy │  Gemini + rule-based trees — picks next
-│  Next Question   │  clinical question, ensures coverage
-└────────┬─────────┘
-         │  (loop until enough info or max turns)
-         ▼
-┌──────────────────┐
-│  Model D: Triage │  Gemini — risk scoring, priority level,
-│  Risk Scoring    │  department routing
-└────────┬─────────┘
-         ▼
-┌──────────────────┐
-│  Model E: Patient│  Gemini — generates patient-facing
-│  Guidance        │  guidance in their language
-└────────┬─────────┘
-         ▼
-┌──────────────────┐
-│  Model F: Doctor │  Gemini — structured summary for
-│  Summary         │  the reviewing clinician
-└────────┬─────────┘
-         ▼
-  Doctor reviews brief
-  in the dashboard
+```mermaid
+flowchart LR
+    P([Patient speaks]) --> W[Backend · Whisper STT<br/>Kinyarwanda + English]
+    W --> T{Kinyarwanda?}
+    T -- yes --> TR[Translate to English<br/>cloud]
+    T -- no --> B
+    TR --> B[Extract symptoms<br/>on-device or cloud]
+    B --> R[Backend rules + red-flag check]
+    R -->|need more info| C[Next question<br/>on-device en / cloud rw]
+    C --> P
+    R -->|enough info| D[Triage score<br/>cloud preferred]
+    D --> S[Backend safety rules<br/>+ routing + queue]
+    S --> E[Patient message<br/>on-device en / cloud rw]
+    S --> F[Doctor brief<br/>on-device or cloud]
+    E --> K([Spoken + on screen + SMS])
+    F --> DR([Doctor dashboard])
 ```
 
-### ML Models & APIs
+"On-device" means Gemini Nano in Chrome when available; "cloud" means Gemini in the cloud. Every step is a single Firebase AI Logic call that can take either path.
 
-| Model   | Technology                                                                                                                                                                                          | Purpose                               |
-| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| Model A | [akera/whisper-large-v3-kin-200h-v2](https://huggingface.co/akera/whisper-large-v3-kin-200h-v2) (Kinyarwanda) + [openai/whisper-large-v3](https://huggingface.co/openai/whisper-large-v3) (English) | Speech-to-text transcription          |
-| Model B | Google Gemini                                                                                                                                                                                       | Extract clinical info from transcript |
-| Model C | Google Gemini + rule-based question trees (`model_c_rules.py`)                                                                                                                                      | Choose next follow-up question        |
-| Model D | Google Gemini                                                                                                                                                                                       | Risk scoring and triage               |
-| Model E | Google Gemini                                                                                                                                                                                       | Patient guidance message generation   |
-| Model F | Google Gemini                                                                                                                                                                                       | Doctor summary generation             |
-| TTS     | ElevenLabs API (frontend)                                                                                                                                                                           | Text-to-speech for patient responses  |
+### The AI steps and where they run
 
-### Core User Flows
+Seven AI steps run **in the browser through Firebase AI Logic**. Speech-to-text runs on our backend with Whisper, including a model fine-tuned for Kinyarwanda speech.
 
-**Kiosk (Patient) Flow:**
+| Step | What it does | Default mode | Why |
+|---|---|---|---|
+| Translation | Kinyarwanda → English for clinicians and on-device steps | `only_in_cloud` (locked) | Nano doesn't read Kinyarwanda |
+| Symptom extraction (B) | Structured fields from the conversation (JSON schema) | `prefer_on_device` | Most sensitive text → keep it local when possible |
+| Follow-up question (C) | Next clarifying question | `prefer_on_device` (en) · cloud (rw, locked) | Short, single-turn → ideal for Nano |
+| Triage score (D) | Priority, issue category, confidence | `prefer_in_cloud` | Safety-critical → stronger model first |
+| Routing suggestion | Department when the issue is unclear | `prefer_in_cloud` | Rare, needs broader knowledge |
+| Patient message (E) | Calm next-step instructions, no diagnosis | `prefer_on_device` (en) · cloud (rw, locked) | Patient-facing, in their language |
+| Doctor brief (F) | Factual narrative + key findings | `prefer_on_device` | Most sensitive output → keep it local when possible |
 
-AI steps (translation, Models B–F) run in the browser through Firebase AI Logic hybrid inference; the backend transcribes, validates, routes and persists.
+Every mode, the on-device deadline and the cool-down are **Remote Config parameters**. On our 8 GB test laptop, for example, we route extraction (which re-reads the whole conversation after every answer) to the cloud and keep the short single-turn steps on Nano — a change made in the console, with no redeploy.
 
-1. `POST /kiosk/start` — start session, get greeting
-2. `POST /kiosk/{id}/transcribe` — Whisper transcription of the complaint / an answer
-3. `POST /kiosk/{id}/extraction` — store the browser's extraction, get the next question (rules) or the context to generate one (repeats until enough info or max turns)
-4. `POST /kiosk/{id}/score` — validate the triage score, apply safety rules, get routing
-5. `POST /kiosk/{id}/complete` — store patient message + doctor brief, queue the patient, send SMS
+---
 
-**Doctor Flow:**
+## Technical implementation (Firebase AI Logic)
 
-1. Login via `POST /auth/login`
-2. View queue via `GET /doctor/queue`
-3. Review patient briefs via `GET /doctor/briefs/{session_id}`
+### 1. Hybrid inference through the Firebase JS SDK
+FlutterFire's `firebase_ai` package doesn't support hybrid/on-device inference yet; the Firebase **JS SDK** does. Eleza therefore calls Firebase AI Logic from a small JS module that the Flutter web app uses through `dart:js_interop`:
 
-### Tech Stack
+- [`frontend/web/eleza_ai.js`](frontend/web/eleza_ai.js) — imports `firebase/ai` and builds the model with `getGenerativeModel(ai, { mode, onDeviceParams, inCloudParams })` ([line 83](frontend/web/eleza_ai.js#L83)), reads `response.inferenceSource` to know which path answered ([line 123](frontend/web/eleza_ai.js#L123)).
+- It loads the **same SDK build as FlutterFire**, so it shares FlutterFire's Firebase app — and therefore its **App Check** token — instead of initialising a second app.
+- Structured output works on both paths: a JSON schema is passed as `responseConstraint` on-device and `responseJsonSchema` in the cloud.
+- [`frontend/lib/services/hybrid_ai_service.dart`](frontend/lib/services/hybrid_ai_service.dart) — typed Dart API over the bridge.
+- [`frontend/lib/services/clinical_ai.dart`](frontend/lib/services/clinical_ai.dart) — the seven clinical steps, their prompts and schemas, and per-step routing ([`modeFor`](frontend/lib/services/clinical_ai.dart#L73)).
 
-| Layer       | Technology                                                  |
-| ----------- | ----------------------------------------------------------- |
-| Backend API | Python 3.10+, FastAPI, Gunicorn + Uvicorn                   |
-| Database    | PostgreSQL (psycopg2 connection pool)                       |
-| ML Models   | HuggingFace Transformers (Whisper), Google Gemini API       |
-| Frontend    | Flutter (Dart), cross-platform (Web, Android, iOS, Windows) |
-| TTS         | ElevenLabs API                                              |
-| Auth        | JWT tokens (bcrypt password hashing)                        |
+### 2. A fallback that respects a patient standing at a kiosk
+`prefer_on_device` alone would wait for Nano however long it takes. Eleza adds ([`preferOnDeviceWithDeadline`](frontend/web/eleza_ai.js#L144)):
+- **Deadline:** Nano gets a configurable budget (default 12 s). If it's exceeded, the on-device prompt is **aborted** (`AbortController`) and the same request is answered in the cloud.
+- **Cool-down:** after a timeout, Nano is skipped for a while so one slow device doesn't make every step wait.
+- **Warm-up:** the kiosk sends Nano a tiny prompt while the greeting plays, so the first real step doesn't pay the model's cold start.
+- **Clean sessions:** on-device sessions are destroyed after each call, so a long-running kiosk doesn't accumulate them in memory.
+- Every result carries a **trace** — step, `on_device`/`in_cloud`, mode, latency and fallback reason (`timeout`, `device_slow`, `device_unavailable`, `device_error`).
 
-## Demo And Deployment Links
+### 3. The browser is untrusted — the backend has the last word
+AI runs in the patient's browser, so [the backend](backend/routers/kiosk_hybrid.py) treats every AI result as untrusted input:
+- **Validates and caps** extraction fields; re-runs a **keyword red-flag check** on what the patient actually said ([`model_b._detect_red_flags`](backend/models/model_b.py#L73)).
+- **Safety rules** ([`apply_safety_rules`](backend/models/model_d.py#L134)): a red flag, or patient-reported severity ≥ threshold, **forces HIGH priority** whatever the model said, and the doctor sees why ("Triage Safety Rule").
+- **Vets the patient message** ([`vet_message`](backend/models/model_e.py#L153)): no disease names, no treatment advice; otherwise a safe template is used.
 
-- Demo video: [Link to demo video](https://drive.google.com/drive/folders/1eRBl3uKAhTo8PucomjlGDkXwoBHeUNrZ?usp=sharing)
-- Deployed frontend: [Link to flutter APK file](https://drive.google.com/drive/folders/1_HDb-CJvF1riBDUhP5I5dgTGcu4zviLh?usp=sharing)
-- Deployed backend/API: [Link to backend ](https://boisterously-implicatory-anderson.ngrok-free.dev/docs)
-- Deployed database: [Link to Render database](https://dashboard.render.com/d/dpg-d6ol7qkr85hc739hdvog-a)
+### 4. App Check
+Required by Firebase AI Logic and activated before any AI call ([`main.dart`](frontend/lib/main.dart#L62)): the **debug provider** for local development, **reCAPTCHA** for the hosted build. Because the JS bridge shares FlutterFire's Firebase app, App Check covers the hybrid calls too.
 
-### Deployment Overview
+### 5. Remote Config — as clinical governance, in two places
+- **Client template (kiosk):** inference mode per step, on-device deadline and cool-down, all prompts, and whether the kiosk shows On-device/Cloud indicators ([`app_config.dart`](frontend/lib/services/app_config.dart), [`clinical_prompts.dart`](frontend/lib/services/clinical_prompts.dart)). Every value has an in-app default; invalid console values fall back to it.
+- **Server template (backend):** the **triage safety thresholds** (low-confidence cutoff, maximum questions, severity that forces HIGH), read with the Firebase Admin SDK ([`server_config.py`](backend/server_config.py)). Safety thresholds live on the server — a browser can't change them — and are clamped to safe ranges.
+- Ready-to-upload templates: [`firebase/remote-config/`](firebase/remote-config/).
 
-| Component       | Platform                        | Notes                                                                                                                                                     |
-| --------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Backend API     | **HuggingFace Spaces** (Docker) | Port 7860. Config in root `Dockerfile`. First boot downloads ~6 GB of Whisper models.                                                                     |
-| Backend tunnel  | **ngrok**                       | The current deployed URL is an ngrok tunnel. This URL can change — if it does, update it in `frontend/lib/services/api_service.dart` (hardcoded for web). |
-| Database        | **Render PostgreSQL**           | Managed database. Connection details set via environment variables on HuggingFace Spaces.                                                                 |
-| Frontend builds | **Codemagic CI/CD**             | Builds APK, web, and iOS artifacts. Config in `codemagic.yaml`.                                                                                           |
-| Frontend APK    | **Google Drive**                | Downloadable APK for Android testing.                                                                                                                     |
+### 6. Visible hybrid behaviour
+With `kiosk_show_ai_details` on, the kiosk shows the Nano status and a live **On-device / Cloud** badge for each step, and the completion screen lists how every step was processed. The platform admin sees the same per-session trace on the patient page; the backend stores an `ai_summary` (on-device share, cloud fallbacks) with every brief.
 
-## Quick Setup (Backend + Frontend)
+### Firebase products used
 
-### Prerequisites
+| Product | Used for |
+|---|---|
+| **Firebase AI Logic** | All 7 language steps, hybrid on-device (Gemini Nano) / cloud (Gemini) |
+| **App Check** | Protects every AI Logic call (debug provider locally, reCAPTCHA when hosted) |
+| **Remote Config** | Client: per-step routing, timeouts, prompts, UI flag · Server: triage safety thresholds |
+| **Hosting** | The Flutter web app |
 
-- Python 3.10+
-- Flutter SDK (stable, Dart 3.7.2+)
-- PostgreSQL (for full backend database features)
-- ~6 GB disk space for Whisper model downloads
-- ~6 GB RAM to run both Whisper models simultaneously
+---
 
-> **First-run warning:** On first startup, the backend downloads two Whisper models (~3 GB each). This can take 5–15 minutes depending on your connection. Subsequent starts use the cached models.
+## Try it (judges)
 
-### 1) Create And Activate Virtual Environment (Backend)
+> **Best experience:** Chrome desktop **139+** with Gemini Nano enabled. Without Nano, everything still works — every step falls back to the cloud, which is exactly the hybrid behaviour.
 
-From the project root:
+1. **Enable Gemini Nano (optional):** open `chrome://flags/#prompt-api-for-gemini-nano-multimodal-input`, set **Enabled**, relaunch Chrome. The first use downloads the model.
+2. **Open the app:** _TODO: Firebase Hosting URL_. Allow the microphone when asked.
+3. **Patient kiosk:** on *"What will this device be used for?"* choose **Patient Kiosk**, pick English or Kinyarwanda, press the button and describe a symptom, e.g. *"I have had a headache since yesterday."* Answer the questions. Watch the **On-device / Cloud** badges.
+   - Try a red flag: *"I have chest pain and I can't breathe"* → Emergency, regardless of the model's score.
+4. **Doctor view:** open `…/#/login` and sign in with the demo account below. Open the patient you just created to see the brief.
 
-Windows PowerShell:
+| Role | Email | Password |
+|---|---|---|
+| Doctor | `doctor@eleza.demo` | _see Devpost testing instructions_ |
+| Hospital admin | `hospital.admin@eleza.demo` | _same_ |
+| Platform admin (sees AI processing per session) | `platform.admin@eleza.demo` | _same_ |
 
-```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-```
+All demo data is fictional. Please use fake names and phone numbers.
 
-macOS/Linux:
+> The speech-to-text backend runs on a GPU that sleeps when idle; the **first** request after a pause can take 1–2 minutes while Whisper loads.
 
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
+---
 
-Deactivate when done:
+## Run it yourself
 
-```bash
-deactivate
-```
+**Prerequisites:** Flutter (Dart ≥ 3.7), Python 3.10+, a PostgreSQL database (e.g. a free [Neon](https://neon.tech) project), a Firebase project, and a GPU for Whisper (a free Colab T4 works).
 
-### 2) Backend Setup
+### 1. Firebase project
+1. Create a project and a **Web app**; enable **Firebase AI Logic** with the **Gemini Developer API**.
+2. **App Check:** register the web app, then *Manage debug tokens* → add a UUID (used as `APPCHECK_DEBUG_TOKEN`). For hosting, add a **reCAPTCHA** provider.
+3. **Remote Config:** *Publish from a file* → [`client-template.json`](firebase/remote-config/client-template.json) (Client) and [`server-template.json`](firebase/remote-config/server-template.json) (Server). Optional — the app has defaults.
+
+### 2. Backend
+Easiest: open [`backend/colab-test.ipynb`](backend/colab-test.ipynb) in Google Colab (T4 GPU), add the secrets it lists, **Run all**. It installs everything, prepares the database, starts the API and prints a public URL. Locally:
 
 ```bash
 cd backend
 pip install -r requirements.txt
+cp .env.example .env          # fill in DB_*, HF_TOKEN, ELEVENLABS_API_KEY, JWT_SECRET_KEY
+DEMO_PASSWORD='choose-one' python setup_db.py   # tables + demo accounts (safe to re-run)
+uvicorn main:app --port 8000  # → http://localhost:8000/docs
 ```
 
-Create a `.env` in `backend/` (copy from `backend/.env.example`):
+Details: [backend/Readme.md](backend/Readme.md).
 
-```bash
-cp .env.example .env
-```
-
-Then fill in the **required** values (see [Environment Variables](#environment-variables) below).
-
-Database setup (if using PostgreSQL locally):
-
-```bash
-createdb pre_consultation_db
-psql -U postgres -d pre_consultation_db -f database/schema.sql
-```
-
-Apply all migrations (run in order):
-
-```bash
-psql -U postgres -d pre_consultation_db -f database/migrations/add_new_system_fields.sql
-psql -U postgres -d pre_consultation_db -f database/migrations/add_doctor_specialty.sql
-psql -U postgres -d pre_consultation_db -f database/migrations/fix_v_facility_stats_missing_columns.sql
-psql -U postgres -d pre_consultation_db -f database/migrations/add_age_to_patient_list_view.sql
-psql -U postgres -d pre_consultation_db -f database/migrations/fix_v_queue_overview_missing_exams.sql
-```
-
-Create the first platform admin user:
-
-```bash
-python init_db.py
-```
-
-This is an interactive script that prompts for email, name, and password. You need this account to log in and create other users.
-
-Run API:
-
-```bash
-uvicorn main:app --reload --port 8000
-```
-
-Useful endpoints after start:
-
-- API docs (Swagger UI): `http://localhost:8000/docs`
-- Startup status: `http://localhost:8000/startup/status`
-- Health check: `http://localhost:8000/health`
-
-### 3) Frontend Setup
-
-In a separate terminal:
-
+### 3. Frontend
 ```bash
 cd frontend
+cp firebase.env.example.json firebase.env.json   # Firebase web config, App Check debug token, API_BASE_URL
 flutter pub get
+flutter run -d chrome --dart-define-from-file=firebase.env.json
 ```
 
-Create a `.env` file in `frontend/`:
+Details: [frontend/Readme.md](frontend/Readme.md).
 
-```env
-API_BASE_URL=http://localhost:8000
-ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
-```
+No secrets are committed: Firebase config and API keys come from git-ignored files (`firebase.env.json`, `backend/.env`) or Colab secrets; the ElevenLabs key never reaches the browser (TTS is proxied by the backend).
 
-- `API_BASE_URL` — the backend URL. Use `http://localhost:8000` for local dev, or the deployed ngrok/Render URL.
-- `ELEVENLABS_API_KEY` — required for text-to-speech. Get one at [elevenlabs.io](https://elevenlabs.io). If omitted, TTS won't work but the rest of the app will.
+---
 
-> **Note:** When running on **web** (`flutter run -d chrome`), the base URL is hardcoded in `lib/services/api_service.dart`. Update it there if needed. The `.env` file is used for mobile/desktop builds.
+## Testing
 
-Run frontend (choose one):
+| What | How |
+|---|---|
+| **Each AI step, on-device vs cloud** | Debug builds include `/#/ai-smoke-test`: runs every clinical step and shows `source: on_device / in_cloud`, latency and fallback reason, plus the active Remote Config. |
+| **Backend readiness** | `GET /startup/status` → Whisper loaded, database connected, Remote Config values and their source. |
+| **API** | Swagger UI at `/docs`. |
+| **Database setup** | `python setup_db.py` twice — the second run must report everything as already present. |
+| **Full flow (manual)** | English session, Kinyarwanda session, a red-flag session, then the doctor view — the checklist we used is in [`backend/Readme.md`](backend/Readme.md#testing). |
+| **Static checks** | `flutter analyze` (frontend). |
 
-```bash
-flutter run -d chrome
-flutter run -d windows
-flutter run -d android
-```
+---
 
-You can also run on:
+## Built during the submission period (Nov 11 – Nov 30, 2026)
 
-- iOS simulator/device (macOS only)
-- Android emulator
-- Physical Android/iOS device
+Eleza started before this hackathon as a voice pre-consultation prototype (Flutter kiosk + FastAPI backend, Whisper speech-to-text, server-side Gemini calls, PostgreSQL, doctor/admin dashboards, Twilio SMS). **During the hackathon we rebuilt its AI layer around Firebase AI Logic hybrid inference:**
 
-## Testing Guide
+- **Moved all language AI from the server into the browser** via a Firebase AI Logic JS bridge with per-step on-device / cloud routing (7 steps), including structured JSON output on both paths.
+- **Added a Kinyarwanda → English cloud translation step** so on-device steps work for Kinyarwanda patients.
+- **Deadline, cool-down and warm-up** around `prefer_on_device`, plus per-step traces (source, latency, fallback reason).
+- **New backend contract** (`/kiosk/{id}/transcribe → /extraction → /score → /complete`) that treats AI results as untrusted: validation, red-flag re-check, severity safety rule, message vetting.
+- **Firebase App Check** (debug + reCAPTCHA) and **Remote Config** on the client (routing, prompts, timeouts, UI) and on the server (triage thresholds via the Admin SDK).
+- **On-device / Cloud indicators** for patients (configurable), admins and the stored brief.
+- **Security:** Firebase config and keys moved out of the repo; ElevenLabs TTS moved behind a backend proxy.
+- **Reliability and inclusion:** fresh-database setup script with demo accounts, reconnect after serverless-Postgres idle pauses, returning-patient handling, inclusive gender question (male, female, non-binary, other), Kinyarwanda wording fixes.
 
-Use any of the following depending on what you want to validate.
+**Pre-existing / third-party work:** the Whisper models ([`openai/whisper-large-v3`](https://huggingface.co/openai/whisper-large-v3) and the community fine-tuned [`akera/whisper-large-v3-kin-200h-v2`](https://huggingface.co/akera/whisper-large-v3-kin-200h-v2)), ElevenLabs text-to-speech, Twilio SMS and the open-source libraries listed in `pubspec.yaml` and `requirements.txt`. AI coding assistants were used during development.
 
-### Backend Testing Alternatives
+---
 
-1. Swagger UI (manual endpoint testing)
+## Limitations and what's next
 
-- Start backend and open `http://localhost:8000/docs`.
-- Test endpoints interactively with request/response visibility.
+- **Gemini Nano speed depends on the kiosk's hardware.** On an 8 GB laptop, short steps run on-device in ~7 s while long prompts fall back to the cloud — Remote Config lets each hospital tune this per device class.
+- **Kinyarwanda can't run on-device yet** (Nano is English-only), so Kinyarwanda patients' speech is translated in the cloud.
+- **Next:** on-device speech-to-text so the kiosk keeps working during internet outages; a pilot with a Rwandan referral hospital; clinical review of the question trees with more doctors.
 
-2. Integration script
+## Team
 
-```bash
-python backend/test_new_system_integration.py
-```
+**Benitha Uwituze Rutagengwa** — solo developer (product, AI pipeline, backend, frontend). Designed with feedback from community users, an academic supervisor and two Rwandan medical doctors.
 
-3. Database verification script
+## License
 
-```bash
-python testing/test_database.py
-```
-
-4. Whisper/model loading and transcription check
-
-```bash
-python backend/test_whisper.py <path_to_audio.wav>
-```
-
-5. Audio format compatibility test
-
-```bash
-python testing/test_audio_formats.py <path_to_audio_file>
-```
-
-6. Conversation CLI script (legacy/manual flow simulation)
-
-```bash
-python testing/testconversation.py
-```
-
-Note: this script targets conversation endpoints that may differ from the current router contract. Use Swagger UI first if you want the most reliable manual API validation path.
-
-7. Notebook-based testing
-
-- `backend/kaggle-test.ipynb`
-- `backend/colab-test.ipynb`
-- Model notebooks in `notebooks/` for focused experimentation per model.
-
-### Frontend Testing Alternatives
-
-1. Run on web:
-
-```bash
-cd frontend
-flutter run -d chrome
-```
-
-2. Run on Windows desktop:
-
-```bash
-cd frontend
-flutter run -d windows
-```
-
-3. Run on emulator/device:
-
-```bash
-cd frontend
-flutter run -d android
-```
-
-## Environment Variables
-
-All backend env vars go in `backend/.env`. Copy `backend/.env.example` as a starting point.
-
-### Required Variables
-
-| Variable         | Description                                                                                                                                                  |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GOOGLE_API_KEY` | Google Gemini API key. Powers Models B–F (NLU, dialogue, triage, guidance, summaries). Get one at [aistudio.google.com](https://aistudio.google.com/apikey). |
-| `HF_TOKEN`       | HuggingFace access token. Required to download Whisper models. Get one at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).          |
-| `JWT_SECRET_KEY` | Secret key for signing JWT auth tokens. Use a long random string in production.                                                                              |
-| `DB_HOST`        | PostgreSQL host (default: `localhost`).                                                                                                                      |
-| `DB_PORT`        | PostgreSQL port (default: `5432`).                                                                                                                           |
-| `DB_NAME`        | Database name (default: `pre_consultation_db`).                                                                                                              |
-| `DB_USER`        | Database user (default: `postgres`).                                                                                                                         |
-| `DB_PASSWORD`    | Database password.                                                                                                                                           |
-
-### Optional Variables
-
-| Variable                          | Default                       | Description                                                                                  |
-| --------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------- |
-| `USE_DB`                          | `true`                        | Set to `false` to run without a database (limited functionality).                            |
-| `DEVICE`                          | `cpu`                         | PyTorch device for Whisper (`cpu` or `cuda`).                                                |
-| `MAX_TURNS`                       | `6`                           | Maximum follow-up questions per session.                                                     |
-| `AUDIO_STORAGE_DIR`               | `data/audio`                  | Directory for saved audio recordings.                                                        |
-| `LOG_LEVEL`                       | `INFO`                        | Python logging level.                                                                        |
-| `SKIP_LANG_DETECTION_WHEN_HINTED` | `false`                       | Skip Whisper language detection when language is already known.                              |
-| `EMAIL_PROVIDER`                  | `emailjs`                     | Email backend: `smtp` or `emailjs`. See [Email Variables](#email-variables-smtp-or-emailjs). |
-| `PUBLIC_API_BASE_URL`             | `http://localhost:8000`       | Base URL included in emails.                                                                 |
-| `APP_LOGIN_URL`                   | `http://localhost:3000/login` | Login URL included in credential emails.                                                     |
-
-### SMS Variables (Twilio)
-
-SMS notifications are used to send patients their queue assignment and exam instructions after triage.
-
-| Variable             | Description                                                                          |
-| -------------------- | ------------------------------------------------------------------------------------ |
-| `TWILIO_ACCOUNT_SID` | Twilio account SID. Get one at [twilio.com/console](https://www.twilio.com/console). |
-| `TWILIO_AUTH_TOKEN`  | Twilio auth token.                                                                   |
-| `TWILIO_FROM_NUMBER` | Twilio-provisioned sender phone number (e.g., `+1234567890`).                        |
-
-SMS messages are sent in English or Kinyarwanda depending on the patient's language. Phone numbers are auto-normalized to E.164 format (Rwanda `+250` prefix).
-
-### Email Variables (SMTP or EmailJS)
-
-Email is used to send login credentials to new users/doctors and confirmation requests for doctor assignments.
-
-Set the provider with `EMAIL_PROVIDER` (`smtp` or `emailjs`).
-
-**SMTP config:**
-
-| Variable          | Default                          | Description             |
-| ----------------- | -------------------------------- | ----------------------- |
-| `SMTP_HOST`       | _(required)_                     | SMTP server hostname    |
-| `SMTP_PORT`       | `587`                            | SMTP port               |
-| `SMTP_USERNAME`   | _(optional)_                     | SMTP login username     |
-| `SMTP_PASSWORD`   | _(optional)_                     | SMTP login password     |
-| `SMTP_USE_TLS`    | `true`                           | Use STARTTLS            |
-| `SMTP_USE_SSL`    | `false`                          | Use SMTP_SSL (port 465) |
-| `SMTP_FROM_EMAIL` | _(required)_                     | Sender email address    |
-| `SMTP_FROM_NAME`  | `Eleza: Pre-Consultation System` | Sender display name     |
-
-**EmailJS config:**
-
-| Variable              | Description                                 |
-| --------------------- | ------------------------------------------- |
-| `EMAILJS_API_URL`     | API endpoint (defaults to EmailJS v1.0 URL) |
-| `EMAILJS_SERVICE_ID`  | EmailJS service ID                          |
-| `EMAILJS_TEMPLATE_ID` | EmailJS template ID                         |
-| `EMAILJS_PUBLIC_KEY`  | EmailJS public key                          |
-| `EMAILJS_PRIVATE_KEY` | EmailJS private/access key                  |
-
-### Frontend Variables
-
-Frontend env vars go in `frontend/.env`:
-
-| Variable             | Description                                                          |
-| -------------------- | -------------------------------------------------------------------- |
-| `API_BASE_URL`       | Backend API URL (e.g., `http://localhost:8000` or the deployed URL). |
-| `ELEVENLABS_API_KEY` | ElevenLabs API key for text-to-speech functionality.                 |
-
-## Database
-
-### Schema
-
-The database is PostgreSQL with the following core tables:
-
-| Table                  | Purpose                                                                  |
-| ---------------------- | ------------------------------------------------------------------------ |
-| `users`                | Auth users (roles: `platform_admin`, `hospital_admin`, `doctor`)         |
-| `facility`             | Hospital/clinic records                                                  |
-| `patient`              | Patient demographics (name, phone, language)                             |
-| `session`              | Pre-consultation sessions with status, extracted data, and doctor briefs |
-| `conversation_message` | Full message history per session                                         |
-| `symptom`              | Extracted symptoms per session                                           |
-| `prediction`           | Risk assessments and triage results                                      |
-| `prescription`         | Treatment recommendations                                                |
-| `healthcare_worker`    | Doctors/nurses linked to users and facilities                            |
-| `room`                 | Rooms per facility                                                       |
-| `examination_queue`    | Queue entries linking sessions to facilities, doctors, and rooms         |
-| `audio_recording`      | References to saved audio files                                          |
-
-### Migrations
-
-Migrations are in `backend/database/migrations/` and must be applied in order after the base schema. See the [Backend Setup](#2-backend-setup) section for commands.
-
-### Backup & Restore
-
-```bash
-pg_dump -U postgres pre_consultation_db > backup.sql
-psql -U postgres pre_consultation_db < backup.sql
-```
-
-## Project Structure
-
-```
-pre-consultation-agent/
-├── README.md                  # This file
-├── Dockerfile                 # HuggingFace Spaces deployment
-├── codemagic.yaml             # CI/CD for Flutter builds
-│
-├── backend/
-│   ├── main.py                # FastAPI app entry point
-│   ├── init_db.py             # Create first admin user (interactive)
-│   ├── requirements.txt       # Python dependencies
-│   ├── start.sh               # Container startup (model download + gunicorn)
-│   ├── .env.example           # Environment variable template
-│   ├── database/
-│   │   ├── database.py        # PostgreSQL connection pool & DB classes
-│   │   ├── schema.sql         # Full database schema
-│   │   └── migrations/        # SQL migration files (apply in order)
-│   ├── models/
-│   │   ├── model_a.py         # Whisper speech-to-text
-│   │   ├── model_b.py         # Gemini clinical extraction
-│   │   ├── model_c.py         # Gemini next-question selection
-│   │   ├── model_c_rules.py   # Rule-based question trees
-│   │   ├── model_d.py         # Gemini risk scoring
-│   │   ├── model_e.py         # Gemini patient guidance
-│   │   ├── model_f.py         # Gemini doctor summary
-│   │   └── gemini_utils.py    # Shared Gemini API utilities
-│   ├── routers/               # FastAPI route handlers
-│   │   ├── kiosk.py           # Patient kiosk endpoints
-│   │   ├── dialogue.py        # Conversation endpoints
-│   │   ├── doctor.py          # Doctor dashboard endpoints
-│   │   ├── auth.py            # Authentication (login, register)
-│   │   ├── patients.py        # Patient record endpoints
-│   │   ├── facilities.py      # Facility management
-│   │   ├── rooms.py           # Room management
-│   │   ├── queue.py           # Queue management
-│   │   └── ...                # Other routers
-│   ├── routing/               # Session routing logic
-│   └── utils/                 # Email (SMTP/EmailJS), SMS (Twilio), session logger
-│
-├── frontend/
-│   ├── lib/
-│   │   ├── main.dart          # App entry point
-│   │   ├── screens/           # UI screens (kiosk/, doctor/, admin/)
-│   │   ├── services/          # API, audio, TTS services
-│   │   ├── models/            # Dart data models
-│   │   └── components/        # Reusable UI components
-│   ├── assets/translations/   # i18n (en.json, rw.json)
-│   └── pubspec.yaml           # Flutter dependencies
-│
-├── notebooks/                 # Jupyter notebooks per model (experimentation)
-├── testing/                   # Standalone test scripts
-└── Datasets/                  # Training data
-```
-
-4. Run widget tests:
-
-```bash
-cd frontend
-flutter test
-```
-
-5. Static checks:
-
-```bash
-cd frontend
-flutter analyze
-```
-
-## Testing Reference
-
-| File                                     | Type                | What It Tests                                                                                                                    | Key Metrics / Aspects                                                                                                                                                                        | How To Run                                                            |
-| ---------------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `backend/test_unit_basic.py`             | Unit (pytest)       | Auth helpers: `hash_password`, `verify_password`, `create_access_token`, `decode_token`                                          | bcrypt format, password verify correctness, JWT roundtrip, token expiry handling                                                                                                             | `cd backend && python -m pytest test_unit_basic.py -v`                |
-| `backend/test_new_system_integration.py` | Integration         | Two-stage extraction pipeline across 3 routing modes (rule-based, AI-powered, emergency)                                         | Routing mode correctness, API call count, cost estimates, predefined question retrieval                                                                                                      | `python backend/test_new_system_integration.py`                       |
-| `testing/test_database.py`               | Integration         | DB connectivity, schema verification, full CRUD lifecycle (patient → session → message → symptom → prediction), stored functions | Connection success, 7 required tables present, CRUD ops, `get_patient_history()`, `close_session()`                                                                                          | `python testing/test_database.py`                                     |
-| `backend/test_whisper.py`                | Smoke test          | Whisper model loading and transcription against a real audio file, system resource monitoring                                    | Model load time, transcription output, detected language, confidence, RAM/CPU usage                                                                                                          | `python backend/test_whisper.py <audio.wav> [--language kinyarwanda]` |
-| `testing/test_audio_formats.py`          | Smoke test          | Audio transcription for arbitrary formats (MP4, WAV, MP3) via Model A                                                            | File size, model readiness, transcription text, detected language, confidence                                                                                                                | `python testing/test_audio_formats.py <audio_file>`                   |
-| `backend/test_pipeline_input.py`         | Validation          | Numpy array format expected by HuggingFace ASR pipeline                                                                          | `dtype==float32`, C-contiguity, writability, dict key structure                                                                                                                              | `python backend/test_pipeline_input.py`                               |
-| `backend/evaluate_system.py`             | Evaluation          | End-to-end system accuracy using Gemini-as-judge on completed DB sessions                                                        | Question relevance (1-5), information gain per turn, coverage rate (9 clinical fields), turn efficiency, routing accuracy. Composite = relevance×35% + gain×25% + coverage×25% + routing×15% | `cd backend && python evaluate_system.py [--limit N] [--json]`        |
-| `testing/testconversation.py`            | End-to-end (manual) | Interactive CLI client testing the full conversation API loop                                                                    | API connectivity, session creation, question→answer flow, diagnosis output (prediction, confidence, severity)                                                                                | Start server, then `python testing/testconversation.py`               |
-
-> **Note:** `testconversation.py` targets legacy endpoints (`/conversation/start`, `/conversation/message`) that may differ from the current kiosk contract. Use Swagger UI for the most reliable manual API validation.
-
-## Results Summary
-
-Current achieved results:
-
-- A patient can speak to the system and receive tailored follow-up questions for clarification.
-- The system provides next-step guidance without issuing a medical diagnosis.
-- The system forwards structured patient information and symptoms for doctor review.
-- Doctors can review patient cases and assign examinations or next actions.
-
-Current gap against intended objective:
-
-- A planned breathing-pattern emergency escalation feature (detect respiratory distress from speech/audio and escalate immediately) is not yet implemented.
-
-## Analysis
-
-Detailed analysis of the results and how they achieved or missed the objectives in the project proposal with the supervisor.
-
-The project achieved key functional objectives for supervised pre-consultation intake: multilingual patient interaction (Kinyarwanda and English), iterative clarification, safe non-diagnostic guidance, and doctor-facing case summaries. These outcomes align with the objective of reducing intake friction while preserving clinician decision authority.
-
-Afterdiscussin, the system direct the patient to a particular area as necessary or escalates to emergency if necessary. Finally, The doctor can also view each patient's case and assign them necessary examinations or other next steps.
-
-However, one high-impact objective remains incomplete: automatic breathing/emergency detection directly from patient speech. Because this feature was not completed, emergency detection is currently dependent on existing symptom and red-flag logic rather than dedicated respiratory signal analysis. This leaves an important safety enhancement for future implementation.
-
-## Discussion
-
-A detailed discussion on the importance of the milestones and the impact of the results with the supervisor.
-
-Key milestone impact:
-
-- Voice capture and transcription enabled practical patient interaction in supported languages.
-- Clarification question flow improved symptom detail quality before clinician review.
-- Structured handoff to doctors reduced information loss between intake and consultation.
-- Doctor-side review and action assignment supports real clinical workflow continuity.
-
-Together, these milestones show that the system can function as a meaningful pre-consultation layer in hospital settings, especially where intake bottlenecks are common.
-
-## Recommendations
-
-Next steps:
-
-- Implement respiratory distress detection from speech/audio to support immediate emergency escalation.
-- Add stronger validation in real hospital pilot environments with clinician feedback loops.
-- Expand multilingual robustness and accents handling.
-- Add more preset symptoms so the system has a fallback and doesn't always call the models.
-- Strengthen deployment hardening (security, privacy controls, auditability, and observability).
-
-Community application guidance:
-
-- Use the tool as supervised pre-consultation support, never as standalone diagnosis.
-- Keep clinicians in the decision loop for all medical decisions.
-- Pair technical rollout with user training for hospital staff and patient facilitators.
-
-## Testing Images
-
-Frontend (Flutter Web):
-
-![alt text](<Screenshot 2026-03-13 222814.png>)
-
-Backend:
-
-Kaggle:
-
-![alt text](<Screenshot 2026-03-13 235241.png>)
-
-Swagger UI:
-
-![alt text](image.png)
+[Apache License 2.0](LICENSE)
