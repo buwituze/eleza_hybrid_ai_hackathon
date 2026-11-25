@@ -853,7 +853,10 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
               final s => 'Priority raised to HIGH by rule: $s.',
             }),
           ],
-          if (_patientBrief?.aiTrace.isNotEmpty == true) ...[
+          // Where each AI step ran: for the platform admin (system
+          // monitoring), not clinical information for doctors.
+          if (_isPlatformAdmin &&
+              _patientBrief?.aiTrace.isNotEmpty == true) ...[
             const SizedBox(height: 10),
             _sectionTitle('AI Processing'),
             const SizedBox(height: 6),
