@@ -1,0 +1,74 @@
+{
+  "parameters": {
+    "config_version": {
+      "defaultValue": {
+        "value": "v1"
+      },
+      "valueType": "STRING",
+      "description": "Shown on the smoke-test page to confirm the kiosk reads the console"
+    },
+    "ai_mode_extraction": {
+      "defaultValue": {
+        "value": "prefer_on_device"
+      },
+      "valueType": "STRING",
+      "description": "Symptom extraction (Model B): prefer_on_device | only_on_device | prefer_in_cloud | only_in_cloud"
+    },
+    "ai_mode_question": {
+      "defaultValue": {
+        "value": "prefer_on_device"
+      },
+      "valueType": "STRING",
+      "description": "Follow-up question (Model C). Kinyarwanda sessions always use the cloud"
+    },
+    "ai_mode_guidance": {
+      "defaultValue": {
+        "value": "prefer_on_device"
+      },
+      "valueType": "STRING",
+      "description": "Patient message (Model E). Kinyarwanda sessions always use the cloud"
+    },
+    "ai_mode_brief": {
+      "defaultValue": {
+        "value": "prefer_on_device"
+      },
+      "valueType": "STRING",
+      "description": "Doctor brief (Model F)"
+    },
+    "ai_mode_score": {
+      "defaultValue": {
+        "value": "prefer_in_cloud"
+      },
+      "valueType": "STRING",
+      "description": "Triage score (Model D)"
+    },
+    "ai_mode_routing": {
+      "defaultValue": {
+        "value": "prefer_in_cloud"
+      },
+      "valueType": "STRING",
+      "description": "Department suggestion when the issue is unclear"
+    },
+    "ai_on_device_timeout_ms": {
+      "defaultValue": {
+        "value": "12000"
+      },
+      "valueType": "NUMBER",
+      "description": "How long Gemini Nano gets before the cloud answers (1000-120000)"
+    },
+    "ai_slow_device_cooldown_ms": {
+      "defaultValue": {
+        "value": "300000"
+      },
+      "valueType": "NUMBER",
+      "description": "After a timeout, skip Nano for this long (0-3600000)"
+    },
+    "kiosk_show_ai_details": {
+      "defaultValue": {
+        "value": "true"
+      },
+      "valueType": "BOOLEAN",
+      "description": "Show On-device / Cloud indicators on the kiosk. true for demos and judging; false in a real hospital (in-app default: false)"
+    }
+  }
+}
