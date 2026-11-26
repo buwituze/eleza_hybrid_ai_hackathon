@@ -56,6 +56,9 @@ Whisper large-v3 needs a **GPU** (on CPU one answer takes minutes) and ~6 GB of 
 ### Option A — Google Colab (free T4)
 Open [`colab-test.ipynb`](colab-test.ipynb) in Colab, select a **T4 GPU**, add the secrets listed in its first cell, set `REPO_BRANCH`, then **Runtime → Run all**. It installs dependencies, prepares the database, starts the API in the background and prints a public ngrok URL. Steps 7–9 show readiness, logs, and stop the server.
 
+### Optional — Modal (always-on hosting)
+[`modal_app.py`](modal_app.py) runs the same app on a Modal T4 GPU that sleeps when idle, with the Whisper download cached between cold starts. It is not used unless you deploy it; Colab remains the default. Setup steps are at the top of the file: create a Modal secret `eleza-backend` with the same values as the Colab secrets, run `modal deploy modal_app.py`, then point the frontend's `API_BASE_URL` at the URL it prints.
+
 ### Option B — local
 ```bash
 python -m venv venv && source venv/bin/activate      # Windows: .\venv\Scripts\Activate.ps1
