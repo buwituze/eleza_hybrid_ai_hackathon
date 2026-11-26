@@ -59,17 +59,20 @@ async def lifespan(app: FastAPI):
     print("   Expect /models/status → 'loading_kinyarwanda_model' for ~30-90 seconds")
     
     async def load_models_with_timeout():
+        # The first start downloads ~6 GB, which can take well over 5 minutes
+        # on a fresh Colab/GPU machine. A slow download is not a failure: keep
+        # waiting and only log progress. model_a sets its own ready flag.
+        load = asyncio.ensure_future(asyncio.to_thread(model_a.load_models))
         try:
-            await asyncio.wait_for(
-                asyncio.to_thread(model_a.load_models),
-                timeout=300  # 5 minute timeout
-            )
-            _startup_info["models_ready"] = True
-        except asyncio.TimeoutError:
-            error_msg = "❌ Model loading timed out after 5 minutes"
-            print(error_msg)
-            _startup_info["startup_errors"].append(error_msg)
-            model_a._loading_status = "error: timeout after 5 minutes"
+            while True:
+                try:
+                    await asyncio.wait_for(asyncio.shield(load), timeout=300)
+                    break
+                except asyncio.TimeoutError:
+                    print("⏳ Whisper models still downloading/loading — waiting (first start can take 10+ min)")
+            _startup_info["models_ready"] = model_a._models_ready
+            if not model_a._models_ready:
+                _startup_info["startup_errors"].append(f"❌ Model loading failed: {model_a._loading_status}")
         except Exception as e:
             error_msg = f"❌ Model loading failed: {type(e).__name__}: {e}"
             print(error_msg)
@@ -143,7 +146,7 @@ def health():
     return {
         "status": "ok",
         "database_ready": _startup_info["database_ready"],
-        "models_ready": _startup_info["models_ready"],
+        "models_ready": _startup_info["models_ready"] or model_a._models_ready,
         "startup_errors": _startup_info["startup_errors"],
     }
 
@@ -159,12 +162,12 @@ def startup_status():
     """
     return {
         "database_ready": _startup_info["database_ready"],
-        "models_ready": _startup_info["models_ready"],
+        "models_ready": _startup_info["models_ready"] or model_a._models_ready,
         "startup_errors": _startup_info["startup_errors"],
         "remote_config": server_config.snapshot(),
         "message": (
             "✅ All systems ready"
-            if (_startup_info["database_ready"] and _startup_info["models_ready"])
+            if (_startup_info["database_ready"] and (_startup_info["models_ready"] or model_a._models_ready))
             else "⏳ Still initializing..." if not _startup_info["startup_errors"]
             else "❌ Startup failed - see errors"
         ),
