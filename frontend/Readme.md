@@ -44,7 +44,8 @@ Why the JS bridge: the FlutterFire `firebase_ai` package doesn't offer hybrid/on
    |---|---|
    | `FIREBASE_API_KEY`, `FIREBASE_APP_ID`, `FIREBASE_MESSAGING_SENDER_ID`, `FIREBASE_PROJECT_ID`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_STORAGE_BUCKET`, `FIREBASE_MEASUREMENT_ID` | From Firebase console → Project settings → Your apps → Web app |
    | `APPCHECK_DEBUG_TOKEN` | A UUID you also add under App Check → Apps → three-dot menu → *Manage debug tokens* |
-   | `RECAPTCHA_ENTERPRISE_SITE_KEY` | reCAPTCHA site key for release builds (leave empty locally) |
+   | `RECAPTCHA_ENTERPRISE_SITE_KEY` | Fraud Defense (reCAPTCHA Enterprise) key, used by App Check in release (hosted) builds. Leave empty locally |
+   | `RECAPTCHA_V3_SITE_KEY` | Alternative: reCAPTCHA v3 site key (only for projects that already have v3 registered in App Check) |
    | `API_BASE_URL` | Backend URL, e.g. `http://localhost:8000` or the Colab ngrok URL (no trailing `/`) |
 
 2. **Run:**

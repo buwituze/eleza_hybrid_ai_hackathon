@@ -34,6 +34,8 @@ data/audio/
 .firebase/
 # Firebase web config injected via --dart-define-from-file (keep the .example)
 firebase.env.json
+firebase.env.*.json
+!firebase.env.example.json
 .runtimeconfig.json
 # Service account / Admin SDK keys (used later by firebase-admin)
 *serviceAccount*.json
