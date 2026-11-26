@@ -45,24 +45,33 @@ void main() async {
 /// - Debug builds (or no site key): debug provider. Uses APPCHECK_DEBUG_TOKEN
 ///   from firebase.env.json; register it in Firebase console → App Check →
 ///   Apps → frontend (web) → ⋮ → Manage debug tokens.
-/// - Release builds with RECAPTCHA_ENTERPRISE_SITE_KEY: reCAPTCHA Enterprise.
+/// - Release builds (the hosted app) use reCAPTCHA when a site key is set:
+///   RECAPTCHA_ENTERPRISE_SITE_KEY → Fraud Defense / reCAPTCHA Enterprise
+///   (key created in Google Cloud and linked in App Check), otherwise
+///   RECAPTCHA_V3_SITE_KEY → reCAPTCHA v3. Only public site keys are in the app.
 Future<void> _activateAppCheck() async {
-  const siteKey = String.fromEnvironment('RECAPTCHA_ENTERPRISE_SITE_KEY');
+  const enterpriseKey = String.fromEnvironment('RECAPTCHA_ENTERPRISE_SITE_KEY');
+  const v3Key = String.fromEnvironment('RECAPTCHA_V3_SITE_KEY');
   const debugToken = String.fromEnvironment('APPCHECK_DEBUG_TOKEN');
 
-  final useRecaptcha = siteKey.isNotEmpty && !kDebugMode;
-  final WebProvider provider =
-      useRecaptcha
-          ? ReCaptchaEnterpriseProvider(siteKey)
-          : WebDebugProvider(
-            debugToken: debugToken.isEmpty ? null : debugToken,
-          );
+  final String providerName;
+  final WebProvider provider;
+  if (!kDebugMode && enterpriseKey.isNotEmpty) {
+    provider = ReCaptchaEnterpriseProvider(enterpriseKey);
+    providerName = 'reCAPTCHA Enterprise';
+  } else if (!kDebugMode && v3Key.isNotEmpty) {
+    provider = ReCaptchaV3Provider(v3Key);
+    providerName = 'reCAPTCHA v3';
+  } else {
+    provider = WebDebugProvider(
+      debugToken: debugToken.isEmpty ? null : debugToken,
+    );
+    providerName = 'debug provider';
+  }
 
   try {
     await FirebaseAppCheck.instance.activate(providerWeb: provider);
-    debugPrint(
-      'App Check activated (${useRecaptcha ? 'reCAPTCHA Enterprise' : 'debug provider'})',
-    );
+    debugPrint('App Check activated ($providerName)');
   } catch (e) {
     // Don't block the kiosk; AI calls will report App Check errors instead.
     debugPrint('App Check activation failed: $e');
@@ -168,6 +177,7 @@ class _MyAppState extends State<MyApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      debugShowCheckedModeBanner: false,
       title: 'Pre-Consultation Agent',
       localizationsDelegates: [
         KinyarwandaMaterialLocalizations.delegate,
