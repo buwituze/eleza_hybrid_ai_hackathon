@@ -6,7 +6,7 @@ Eleza uses **Firebase AI Logic hybrid inference** so clinical text is processed 
 |                        |                                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------- |
 | **Demo video (3 min)** | _TODO: YouTube link_                                                            |
-| **Live app**           | _TODO: Firebase Hosting URL_ — see [Try it](#try-it-judges)                     |
+| **Live app**           | [eleza-b2be6.web.app](https://eleza-b2be6.web.app) — see [Try it](#try-it-judges) |
 | **Platform**           | Web (Chrome desktop) · Firebase AI Logic + Gemini Nano                          |
 | **Firebase**           | AI Logic (hybrid) · App Check · Remote Config (client **and** server) · Hosting |
 | **License**            | [Apache 2.0](LICENSE)                                                           |
@@ -122,7 +122,7 @@ AI runs in the patient's browser, so [the backend](backend/routers/kiosk_hybrid.
 
 ### 4. App Check
 
-Required by Firebase AI Logic and activated before any AI call ([`main.dart`](frontend/lib/main.dart#L62)): the **debug provider** for local development, **reCAPTCHA** for the hosted build. Because the JS bridge shares FlutterFire's Firebase app, App Check covers the hybrid calls too.
+Required by Firebase AI Logic and activated before any AI call ([`main.dart`](frontend/lib/main.dart#L73)): the **debug provider** for local development, **reCAPTCHA** for the hosted build. Because the JS bridge shares FlutterFire's Firebase app, App Check covers the hybrid calls too.
 
 ### 5. Remote Config — as clinical governance, in two places
 
@@ -150,10 +150,10 @@ With `kiosk_show_ai_details` on, the kiosk shows the Nano status and a live **On
 > **Best experience:** Chrome desktop **139+** with Gemini Nano enabled. Without Nano, everything still works — every step falls back to the cloud, which is exactly the hybrid behaviour.
 
 1. **Enable Gemini Nano (optional):** open `chrome://flags/#prompt-api-for-gemini-nano-multimodal-input`, set **Enabled**, relaunch Chrome. The first use downloads the model.
-2. **Open the app:** _TODO: Firebase Hosting URL_. Allow the microphone when asked.
+2. **Open the app:** [https://eleza-b2be6.web.app](https://eleza-b2be6.web.app). Allow the microphone when asked.
 3. **Patient kiosk:** on _"What will this device be used for?"_ choose **Patient Kiosk**, pick English or Kinyarwanda, press the button and describe a symptom, e.g. _"I have had a headache since yesterday."_ Answer the questions. Watch the **On-device / Cloud** badges.
    - Try a red flag: _"I have chest pain and I can't breathe"_ → Emergency, regardless of the model's score.
-4. **Doctor view:** open `…/#/login` and sign in with the demo account below. Open the patient you just created to see the brief.
+4. **Doctor view:** open [https://eleza-b2be6.web.app/#/login](https://eleza-b2be6.web.app/#/login) and sign in with the demo account below. Open the patient you just created to see the brief.
 
 | Role                                            | Email                       | Password                           |
 | ----------------------------------------------- | --------------------------- | ---------------------------------- |
@@ -163,18 +163,18 @@ With `kiosk_show_ai_details` on, the kiosk shows the Nano status and a live **On
 
 All demo data is fictional. Please use fake names and phone numbers.
 
-> The speech-to-text backend runs on a GPU that sleeps when idle; the **first** request after a pause can take 1–2 minutes while Whisper loads.
+> The speech-to-text backend (Whisper) needs a GPU and currently runs on a free Google Colab GPU, so it is online only while that notebook is running. If the kiosk can't start a session, the backend is offline; the demo video shows the complete flow.
 
 ---
 
-## Run it yourself
+## Running the system
 
 **Prerequisites:** Flutter (Dart ≥ 3.7), Python 3.10+, a PostgreSQL database (e.g. a free [Neon](https://neon.tech) project), a Firebase project, and a GPU for Whisper (a free Colab T4 works).
 
 ### 1. Firebase project
 
 1. Create a project and a **Web app**; enable **Firebase AI Logic** with the **Gemini Developer API**.
-2. **App Check:** register the web app, then _Manage debug tokens_ → add a UUID (used as `APPCHECK_DEBUG_TOKEN`). For hosting, add a **reCAPTCHA** provider.
+2. **App Check:** register the web app, then _Manage debug tokens_ → add a UUID (used as `APPCHECK_DEBUG_TOKEN`). For hosting, create a **Fraud Defense (reCAPTCHA Enterprise)** key for your domains and link it in App Check, then set it as `RECAPTCHA_ENTERPRISE_SITE_KEY`.
 3. **Remote Config:** _Publish from a file_ → [`client-template.json`](firebase/remote-config/client-template.json) (Client) and [`server-template.json`](firebase/remote-config/server-template.json) (Server). Optional — the app has defaults.
 
 ### 2. Backend
